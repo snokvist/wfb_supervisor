@@ -172,6 +172,22 @@ static int parse_host_port(const char *in, char *host_out, size_t host_len, int 
     return 0;
 }
 
+/* output endpoint: host:port or unix:/path */
+static int parse_output_endpoint(const char *in,
+                                 char *host_out, size_t host_len, int *port_out,
+                                 char *unix_out, size_t unix_len) {
+    if (!in || !*in) return -1;
+    if (strncasecmp(in, "unix:", 5) == 0) {
+        const char *p = in + 5;
+        size_t len = strlen(p);
+        if (len == 0 || len >= unix_len) return -1;
+        memcpy(unix_out, p, len + 1);
+        return 1; // unix socket
+    }
+    if (parse_host_port(in, host_out, host_len, port_out) != 0) return -1;
+    return 0; // host:port
+}
+
 /* General config parsing */
 
 static void init_general_defaults(void) {
@@ -491,6 +507,7 @@ static void build_wfb_command(const instance_t *inst,
 
     char host[128];
     int port = 0;
+    char unix_path[MAX_VALUE_LEN];
 
     static char arg_storage[MAX_ARGS][MAX_VALUE_LEN];
     int storage_idx = 0;
@@ -520,16 +537,23 @@ static void build_wfb_command(const instance_t *inst,
             add_arg(argv, argc, g_cfg.key_file);
         }
         // output → client_addr/client_port
-        if (parse_host_port(inst->output, host, sizeof(host), &port) != 0) {
-            die("instance '%s': invalid output '%s'", inst->name, inst->output);
+        int out_kind = parse_output_endpoint(inst->output, host, sizeof(host),
+                                             &port, unix_path, sizeof(unix_path));
+        if (out_kind == 1) {
+            add_arg(argv, argc, "-U");
+            add_arg(argv, argc, unix_path);
+        } else if (out_kind == 0) {
+            NEXT_SLOT();
+            snprintf(arg_storage[storage_idx], sizeof(arg_storage[storage_idx]), "%d", port);
+            add_arg(argv, argc, "-c");
+            add_arg(argv, argc, host);
+            add_arg(argv, argc, "-u");
+            add_arg(argv, argc, arg_storage[storage_idx]);
+            storage_idx++;
+        } else {
+            die("instance '%s': invalid output '%s' (host:port or unix:/path)",
+                inst->name, inst->output);
         }
-        NEXT_SLOT();
-        snprintf(arg_storage[storage_idx], sizeof(arg_storage[storage_idx]), "%d", port);
-        add_arg(argv, argc, "-c");
-        add_arg(argv, argc, host);
-        add_arg(argv, argc, "-u");
-        add_arg(argv, argc, arg_storage[storage_idx]);
-        storage_idx++;
 
         // buffers, log, linkid
         if (g_cfg.tx_rcv_buf_size > 0) {

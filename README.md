@@ -8,7 +8,7 @@ A tiny supervisor that parses `wfb.conf` and launches WFB helpers (`wfb_rx`, `wf
 - `./forker /path/to/custom.conf` uses an alternate config
 
 ## Command synthesis at a glance
-- `aggregator` (rx): `wfb_rx -a <listen_port> [-K key] -c <host> -u <port> [-R rcv_buf] [-s snd_buf] [-l log] [-i linkid] [-p radio_port] <ifaces...>`
+- `aggregator` (rx): `wfb_rx -a <listen_port> [-K key] { -c <host> -u <port> | -U unix:/path } [-R rcv_buf] [-s snd_buf] [-l log] [-i linkid] [-p radio_port] <ifaces...>`
 - `forwarder` (rx): `wfb_rx -f -c <host> -u <port> [-i linkid] [-p radio_port] <ifaces...>`
 - `local/aggregator` (tx): `wfb_tx -K <key> -k <fec_k> -n <fec_n> -u <udp_port> [-C control] [-R rcv_buf] [-s snd_buf] [-l log] -F <fec_delay> -T <fec_timeout> -B <bandwidth> -G <guard_interval> -f <data|rts> -M <mcs> -S <stbc> -L <ldpc> [-i linkid] [-p radio_port] <iface>`
 - `distributor` (tx): `wfb_tx -d` plus TX opts, followed by `host:port1,port2,...` (output)
@@ -26,7 +26,7 @@ A tiny supervisor that parses `wfb.conf` and launches WFB helpers (`wfb_rx`, `wf
 Tracking the flags we still need to plumb from config → command lines:
 
 - `wfb_rx`:
-  - `-U unix_socket`, `-e epoch`
+  - `-e epoch`
   - Any future radio/modem toggles beyond the current set
 
 - `wfb_tx`:
