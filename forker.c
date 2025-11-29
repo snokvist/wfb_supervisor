@@ -11,6 +11,7 @@
 #include <fcntl.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <time.h>
 
 #define MAX_INSTANCES 16
 #define MAX_NAME_LEN  64
@@ -305,16 +306,26 @@ static void expand_placeholders(const char *in, char *out, size_t out_len) {
     out[out_pos] = '\0';
 }
 
+static const char *wrap_exec(const char *cmd, char *buf, size_t buf_len) {
+    if (strncmp(cmd, "exec ", 5) == 0) return cmd;
+
+    int n = snprintf(buf, buf_len, "exec %s", cmd);
+    if (n < 0 || (size_t)n >= buf_len) die("expanded command too long");
+    return buf;
+}
+
 static void run_commands(char cmds[][MAX_VALUE_LEN], int count, const char *phase) {
     for (int i = 0; i < count; i++) {
         char expanded[MAX_CMD_LEN];
+        char exec_wrapped[MAX_CMD_LEN];
         expand_placeholders(cmds[i], expanded, sizeof(expanded));
-        fprintf(stderr, "forker: running %s command: %s\n", phase, expanded);
+        const char *cmd = wrap_exec(expanded, exec_wrapped, sizeof(exec_wrapped));
+        fprintf(stderr, "forker: running %s command: %s\n", phase, cmd);
         pid_t pid = fork();
         if (pid < 0) die("%s command fork failed: %s", phase, strerror(errno));
         if (pid == 0) {
-            execl("/bin/sh", "sh", "-c", expanded, (char *)NULL);
-            fprintf(stderr, "forker: exec failed for %s command '%s': %s\n", phase, expanded, strerror(errno));
+            execl("/bin/sh", "sh", "-c", cmd, (char *)NULL);
+            fprintf(stderr, "forker: exec failed for %s command '%s': %s\n", phase, cmd, strerror(errno));
             _exit(127);
         }
         int status;
@@ -330,7 +341,9 @@ static void run_commands(char cmds[][MAX_VALUE_LEN], int count, const char *phas
 
 static void build_command(const instance_t *inst, char **argv, int *argc, char *exec_path, size_t exec_len) {
     char expanded_cmd[MAX_CMD_LEN];
+    char exec_wrapped[MAX_CMD_LEN];
     expand_placeholders(inst->cmd, expanded_cmd, sizeof(expanded_cmd));
+    const char *cmd = wrap_exec(expanded_cmd, exec_wrapped, sizeof(exec_wrapped));
 
     if (inst->sse_enable) {
         snprintf(exec_path, exec_len, "%s", g_cfg.sse_tail);
@@ -353,14 +366,14 @@ static void build_command(const instance_t *inst, char **argv, int *argc, char *
         argv[(*argc)++] = "--";
         argv[(*argc)++] = "/bin/sh";
         argv[(*argc)++] = "-c";
-        argv[(*argc)++] = expanded_cmd;
+        argv[(*argc)++] = (char *)cmd;
         argv[*argc] = NULL;
     } else {
         snprintf(exec_path, exec_len, "%s", "/bin/sh");
         *argc = 0;
         argv[(*argc)++] = exec_path;
         argv[(*argc)++] = "-c";
-        argv[(*argc)++] = expanded_cmd;
+        argv[(*argc)++] = (char *)cmd;
         argv[*argc] = NULL;
     }
 }
@@ -390,21 +403,41 @@ static void shutdown_all(int failed_idx, int failed_status) {
         }
     }
 
-    int still = 1;
-    while (still) {
+    int escalated = 0;
+    time_t start = time(NULL);
+
+    while (1) {
+        int running = 0;
         int status;
-        pid_t pid = waitpid(-1, &status, 0);
-        if (pid <= 0) {
-            if (errno == EINTR) continue;
-            break;
-        }
-        for (int i = 0; i < g_instance_count; i++) {
-            if (g_instances[i].pid == pid) {
-                g_instances[i].exit_status = status;
-                g_instances[i].running = 0;
-                break;
+        pid_t pid = waitpid(-1, &status, WNOHANG);
+        if (pid > 0) {
+            for (int i = 0; i < g_instance_count; i++) {
+                if (g_instances[i].pid == pid) {
+                    g_instances[i].exit_status = status;
+                    g_instances[i].running = 0;
+                    break;
+                }
             }
+            continue;
         }
+
+        for (int i = 0; i < g_instance_count; i++) {
+            if (g_instances[i].running) running++;
+        }
+        if (running == 0) break;
+
+        if (!escalated && difftime(time(NULL), start) >= 5) {
+            fprintf(stderr, "forker: escalating shutdown with SIGKILL for %d remaining children\n", running);
+            for (int i = 0; i < g_instance_count; i++) {
+                if (g_instances[i].running && g_instances[i].pid > 0) {
+                    kill(g_instances[i].pid, SIGKILL);
+                }
+            }
+            escalated = 1;
+        }
+
+        if (pid < 0 && errno != EINTR) break;
+        sleep(1);
     }
 
     fprintf(stderr, "forker: summary:\n");
@@ -425,7 +458,7 @@ static void signal_handler(int sig) {
     g_stop_requested = 1;
 }
 
-static void start_children(void) {
+static int start_children(void) {
     for (int i = 0; i < g_instance_count; i++) {
         instance_t *inst = &g_instances[i];
         char exec_path[MAX_VALUE_LEN];
@@ -442,7 +475,8 @@ static void start_children(void) {
 
         pid_t pid = fork();
         if (pid < 0) {
-            die("fork failed for instance '%s': %s", inst->name, strerror(errno));
+            fprintf(stderr, "forker: fork failed for instance '%s': %s\n", inst->name, strerror(errno));
+            return -1;
         } else if (pid == 0) {
             if (!inst->sse_enable && inst->quiet) {
                 int nullfd = open("/dev/null", O_RDWR);
@@ -460,6 +494,8 @@ static void start_children(void) {
             inst->running = 1;
         }
     }
+
+    return 0;
 }
 
 int main(int argc, char **argv) {
@@ -476,7 +512,11 @@ int main(int argc, char **argv) {
 
     run_commands(g_cfg.init_cmds, g_cfg.init_cmd_count, "init");
 
-    start_children();
+    if (start_children() != 0) {
+        shutdown_all(-1, 0);
+        run_commands(g_cfg.cleanup_cmds, g_cfg.cleanup_cmd_count, "cleanup");
+        return 1;
+    }
 
     int running = g_instance_count;
     int shutdown_initiated = 0;
