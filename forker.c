@@ -97,6 +97,9 @@ static general_config_t g_cfg;
 static instance_t g_instances[MAX_INSTANCES];
 static int g_instance_count = 0;
 static volatile sig_atomic_t g_stop_requested = 0;
+static volatile sig_atomic_t g_reload_requested = 0;
+static volatile sig_atomic_t g_status_requested = 0;
+static const char *g_config_path = NULL;
 
 /* Utility helpers */
 
@@ -385,6 +388,8 @@ static void derive_missing_direction(instance_t *inst) {
 
 static void load_config(const char *path) {
     init_general_defaults();
+    g_instance_count = 0;
+    memset(g_instances, 0, sizeof(g_instances));
 
     FILE *f = fopen(path, "r");
     if (!f) die("cannot open config '%s': %s", path, strerror(errno));
@@ -471,6 +476,10 @@ static void load_config(const char *path) {
         }
         if (inst->inject_port > 0 && inst->kind != INST_KIND_TX_LOCAL) {
             die("instance '%s': injector mode (-I) requires a TX kind", inst->name);
+        }
+        if (inst->kind == INST_KIND_TX_LOCAL &&
+            !inst->distributor && inst->inject_port <= 0 && !inst->input[0]) {
+            die("instance '%s': tx requires input=host:port, inject_port, or distributor", inst->name);
         }
         if (inst->sse_enable && !g_cfg.sse_tail[0]) {
             die("instance '%s': sse enabled but sse_tail not set in [general]",
@@ -939,9 +948,21 @@ static void build_final_command(const instance_t *inst,
 
 /* Process supervision */
 
-static void sigint_handler(int sig) {
-    (void)sig;
-    g_stop_requested = 1;
+static void signal_handler(int sig) {
+    switch (sig) {
+    case SIGINT:
+    case SIGTERM:
+        g_stop_requested = 1;
+        break;
+    case SIGHUP:
+        g_reload_requested = 1;
+        break;
+    case SIGUSR1:
+        g_status_requested = 1;
+        break;
+    default:
+        break;
+    }
 }
 
 // Build all commands up front to catch config errors before forking children.
@@ -960,6 +981,8 @@ static void start_children(void) {
         char cmd_buf[MAX_VALUE_LEN];
         char *argv[MAX_ARGS];
         int argc = 0;
+
+        inst->exit_status = 0;
 
         build_final_command(inst, cmd_buf, sizeof(cmd_buf), argv, &argc);
 
@@ -992,6 +1015,26 @@ static void start_children(void) {
     }
 }
 
+static void dump_status(const char *reason) {
+    fprintf(stderr, "forker: status (%s):\n", reason);
+    for (int i = 0; i < g_instance_count; i++) {
+        instance_t *inst = &g_instances[i];
+        if (inst->running) {
+            fprintf(stderr, "  %s: running (pid %d)\n", inst->name, inst->pid);
+        } else if (inst->pid > 0) {
+            if (WIFEXITED(inst->exit_status)) {
+                fprintf(stderr, "  %s: exited pid %d status %d\n", inst->name, inst->pid, WEXITSTATUS(inst->exit_status));
+            } else if (WIFSIGNALED(inst->exit_status)) {
+                fprintf(stderr, "  %s: exited pid %d signal %d\n", inst->name, inst->pid, WTERMSIG(inst->exit_status));
+            } else {
+                fprintf(stderr, "  %s: exited pid %d status %d\n", inst->name, inst->pid, inst->exit_status);
+            }
+        } else {
+            fprintf(stderr, "  %s: not started\n", inst->name);
+        }
+    }
+}
+
 static void shutdown_all(int failed_idx, int failed_status) {
     if (failed_idx >= 0) {
         instance_t *inst = &g_instances[failed_idx];
@@ -1016,21 +1059,65 @@ static void shutdown_all(int failed_idx, int failed_status) {
         }
     }
 
-    // Reap remaining children
-    int still = 1;
-    while (still) {
+    int remaining = 0;
+    for (int i = 0; i < g_instance_count; i++) {
+        if (g_instances[i].running) remaining++;
+    }
+
+    // Grace period for SIGTERM deliveries
+    const int grace_seconds = 5;
+    int waited = 0;
+    while (remaining > 0 && waited < grace_seconds) {
         int status;
-        pid_t pid = waitpid(-1, &status, 0);
-        if (pid <= 0) {
+        pid_t pid = waitpid(-1, &status, WNOHANG);
+        if (pid > 0) {
+            for (int i = 0; i < g_instance_count; i++) {
+                if (g_instances[i].pid == pid && g_instances[i].running) {
+                    g_instances[i].exit_status = status;
+                    g_instances[i].running = 0;
+                    remaining--;
+                    break;
+                }
+            }
+            continue;
+        }
+        if (pid < 0) {
             if (errno == EINTR) continue;
             break;
         }
+        sleep(1);
+        waited++;
+    }
+
+    // Escalate to SIGKILL if any children remain
+    if (remaining > 0) {
+        fprintf(stderr, "forker: %d child(ren) still running after %d seconds, sending SIGKILL\n",
+                remaining, grace_seconds);
         for (int i = 0; i < g_instance_count; i++) {
-            if (g_instances[i].pid == pid) {
-                g_instances[i].exit_status = status;
-                g_instances[i].running = 0;
-                break;
+            if (g_instances[i].running && g_instances[i].pid > 0) {
+                kill(g_instances[i].pid, SIGKILL);
             }
+        }
+    }
+
+    // Reap any remaining children
+    while (remaining > 0) {
+        int status;
+        pid_t pid = waitpid(-1, &status, 0);
+        if (pid > 0) {
+            for (int i = 0; i < g_instance_count; i++) {
+                if (g_instances[i].pid == pid && g_instances[i].running) {
+                    g_instances[i].exit_status = status;
+                    g_instances[i].running = 0;
+                    remaining--;
+                    break;
+                }
+            }
+            continue;
+        }
+        if (pid < 0) {
+            if (errno == EINTR) continue;
+            break;
         }
     }
 
@@ -1048,29 +1135,28 @@ static void shutdown_all(int failed_idx, int failed_status) {
     }
 }
 
-int main(int argc, char **argv) {
-    const char *config_path = "wfb.conf";
-    if (argc > 1) config_path = argv[1];
-
-    load_config(config_path);
-    validate_all_commands();
-
-    struct sigaction sa;
-    memset(&sa, 0, sizeof(sa));
-    sa.sa_handler = sigint_handler;
-    sigaction(SIGINT, &sa, NULL);
-    sigaction(SIGTERM, &sa, NULL);
-
-    start_children();
-
+static int supervise_children(int *failed_idx_out, int *failed_status_out) {
     int running = g_instance_count;
     int shutdown_initiated = 0;
     int failed_idx = -1;
     int failed_status = 0;
+    int reload_triggered = 0;
 
     while (running > 0) {
+        if (g_status_requested) {
+            dump_status("SIGUSR1");
+            g_status_requested = 0;
+        }
+
         if (g_stop_requested && !shutdown_initiated) {
             shutdown_initiated = 1;
+            failed_idx = -1;
+            failed_status = 0;
+            break;
+        }
+        if (g_reload_requested && !shutdown_initiated) {
+            shutdown_initiated = 1;
+            reload_triggered = 1;
             failed_idx = -1;
             failed_status = 0;
             break;
@@ -1109,5 +1195,48 @@ int main(int argc, char **argv) {
 
     shutdown_all(failed_idx, failed_status);
 
-    return (failed_idx >= 0) ? 2 : 0;
+    if (failed_idx_out) *failed_idx_out = failed_idx;
+    if (failed_status_out) *failed_status_out = failed_status;
+    return reload_triggered;
+}
+
+int main(int argc, char **argv) {
+    g_config_path = "wfb.conf";
+    if (argc > 1) g_config_path = argv[1];
+
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = signal_handler;
+    sigaction(SIGINT, &sa, NULL);
+    sigaction(SIGTERM, &sa, NULL);
+    sigaction(SIGHUP, &sa, NULL);
+    sigaction(SIGUSR1, &sa, NULL);
+
+    int exit_code = 0;
+
+    for (;;) {
+        g_reload_requested = 0;
+        g_status_requested = 0;
+
+        load_config(g_config_path);
+        validate_all_commands();
+
+        if (g_stop_requested) break;
+
+        start_children();
+
+        int failed_idx = -1;
+        int failed_status = 0;
+        int reload_now = supervise_children(&failed_idx, &failed_status);
+
+        if (failed_idx >= 0) exit_code = 2;
+
+        if (g_stop_requested || !reload_now) {
+            break;
+        }
+
+        fprintf(stderr, "forker: reload requested, restarting children\n");
+    }
+
+    return exit_code;
 }

@@ -1,11 +1,16 @@
 # forker
 
-A tiny supervisor that parses `wfb.conf` and launches WFB helpers (`wfb_rx`, `wfb_tx`, `wfb_tun`) optionally wrapped by `sse_tail`. It starts every instance, logs the exact command line, and tears everything down if any child exits or on SIGINT/SIGTERM.
+A tiny supervisor that parses `wfb.conf` and launches WFB helpers (`wfb_rx`, `wfb_tx`, `wfb_tun`) optionally wrapped by `sse_tail`. It starts every instance, logs the exact command line, and tears everything down if any child exits or on SIGINT/SIGTERM. Reload with `SIGHUP` to force a full teardown/config reload/restart cycle, or send `SIGUSR1` to dump per-instance status.
 
 ## Building and running
 - `make` (or `make rebuild`) builds `forker` with `gcc -O2 -std=c11 -Wall -Wextra`
 - `./forker wfb.conf` runs against the sample config in the repo
 - `./forker /path/to/custom.conf` uses an alternate config
+
+## Signals
+- `SIGINT`/`SIGTERM`: begin shutdown, send `SIGTERM` to children, and escalate to `SIGKILL` after the grace window if anything lingers.
+- `SIGHUP`: trigger a full teardown, reload the config file from disk, and restart all instances with fresh defaults.
+- `SIGUSR1`: dump each instance’s running/exited state and exit codes to stderr for quick health checks.
 
 ## Command synthesis at a glance
 - `aggregator` (rx): `wfb_rx -a <listen_port> [-K key] { -c <host> -u <port> | -U unix:/path } [-R rcv_buf] [-s snd_buf] [-l log] [-i linkid] [-p radio_port] <ifaces...>`
