@@ -10,6 +10,7 @@
 
 CHANNEL="161"
 BANDWIDTH="HT20"
+TXPOWER="500"
 
 usage() {
     echo "Usage:"
@@ -73,6 +74,10 @@ monitor_mode() {
         # Set channel/bandwidth
         if ! iw dev "$IFACE" set channel "$CHANNEL" "$BANDWIDTH"; then
             echo "Warning: failed to set channel on $IFACE"
+        fi
+
+        if ! iw dev "$IFACE" set txpower fixed "$TXPOWER"; then
+            echo "Warning: failed to set txpower on $IFACE"
         fi
 
         echo ">>> $IFACE now in monitor mode on channel $CHANNEL $BANDWIDTH"

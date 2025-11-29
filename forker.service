@@ -1,0 +1,16 @@
+[Unit]
+Description=forker control daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=@FORKER_BIN@ @FORKER_CONF@
+WorkingDirectory=@VRX_DIR@
+User=root
+Group=root
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
