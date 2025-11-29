@@ -15,98 +15,39 @@
 #define MAX_INSTANCES 16
 #define MAX_NAME_LEN  64
 #define MAX_VALUE_LEN 256
+#define MAX_CMD_LEN   1024
 #define MAX_ARGS      64
 #define MAX_CMDS      8
 
 typedef struct {
-    char wfb_nics[MAX_VALUE_LEN];    // comma-separated
-    char wfb_tx[MAX_VALUE_LEN];
-    int  fec_n;
-    int  fec_k;
+    char sse_tail[MAX_VALUE_LEN];
+    char sse_host[MAX_VALUE_LEN];
+    int  sse_base_port;
+
+    char rx_nics[MAX_VALUE_LEN];
+    char tx_nics[MAX_VALUE_LEN];
+    char master_node[MAX_VALUE_LEN];
+    char link_id[MAX_VALUE_LEN];
     int  mcs;
-    int  tx_rcv_buf_size;
-    int  rx_snd_buf_size;
-    int  tx_snd_buf_size;
-    int  fec_delay;
-    int  fec_timeout;
-    char frame_type[MAX_VALUE_LEN]; // data or rts
-    int  log_interval;
-    int  wifi_channel;
-    int  stbc;
     int  ldpc;
-    int  bandwidth;
-    char wifi_region[MAX_VALUE_LEN];
-    int  wifi_txpower;
-    char guard_interval[MAX_VALUE_LEN]; // "short" or "long"
+    int  stbc;
     char key_file[MAX_VALUE_LEN];
+    int  log_interval;
 
-    int  radio_port;                 // default radio_port for -p
-
-    // SSE integration
-    char sse_tail[MAX_VALUE_LEN];    // path to sse_tail (optional)
-    char sse_host[MAX_VALUE_LEN];    // e.g. 0.0.0.0
-    int  sse_base_port;             // starting port for auto-assign
-
-    // Run-once hooks
     char init_cmds[MAX_CMDS][MAX_VALUE_LEN];
     int  init_cmd_count;
     char cleanup_cmds[MAX_CMDS][MAX_VALUE_LEN];
     int  cleanup_cmd_count;
 } general_config_t;
 
-typedef enum {
-    INST_KIND_UNKNOWN = 0,
-    INST_KIND_RX_AGGREGATOR,
-    INST_KIND_RX_FORWARDER,
-    INST_KIND_TX_LOCAL,
-    INST_KIND_TUNNEL
-} inst_kind_t;
-
 typedef struct {
     char name[MAX_NAME_LEN];
-    char type[MAX_VALUE_LEN];       // aggregator, forwarder, local, tunnel
-    char direction[MAX_VALUE_LEN];  // rx or tx (empty for tunnel)
-    char input[MAX_VALUE_LEN];      // host:port or empty
-    char output[MAX_VALUE_LEN];     // host:port or url
-    char linkid[MAX_VALUE_LEN];
-    int  control_port;              // for TX
-
-    // tunnel-specific
-    char ifname[MAX_VALUE_LEN];
-    char ifaddr[MAX_VALUE_LEN];
-    int  input_port;
-    int  output_port;
-    int  agg_timeout_ms;
-    char peer_address[MAX_VALUE_LEN];
-    char tx_name[MAX_VALUE_LEN];
-    char rx_name[MAX_VALUE_LEN];
-
-    int  radio_port;                // per-instance radio_port override
-
-    // SSE
+    char cmd[MAX_VALUE_LEN];
     int  sse_enable;
-    int  sse_port;                  // 0 = auto
+    int  sse_port;       // 0 = auto
     char sse_name[MAX_VALUE_LEN];
+    int  quiet;          // suppress stdout/stderr when not using SSE
 
-    // TX modes
-    int  distributor;               // wfb_tx -d
-    int  inject_port;               // wfb_tx -I <port>
-    int  fec_n_override;
-    int  fec_k_override;
-    int  mcs_override;
-    int  stbc_override;
-    int  ldpc_override;
-    int  bandwidth_override;
-    char guard_interval_override[MAX_VALUE_LEN];
-    int  fwmark;                    // wfb_tx -P
-    int  qdisc_enable;              // wfb_tx -Q
-
-    // derived
-    inst_kind_t kind;
-
-    char frame_type[MAX_VALUE_LEN]; // optional override
-
-    // runtime
     pid_t pid;
     int   exit_status;
     int   running;
@@ -116,11 +57,8 @@ static general_config_t g_cfg;
 static instance_t g_instances[MAX_INSTANCES];
 static int g_instance_count = 0;
 static volatile sig_atomic_t g_stop_requested = 0;
-static volatile sig_atomic_t g_reload_requested = 0;
-static volatile sig_atomic_t g_status_requested = 0;
-static const char *g_config_path = NULL;
 
-/* Utility helpers */
+/* Utils */
 
 static void die(const char *fmt, ...) {
     va_list ap;
@@ -134,31 +72,18 @@ static void die(const char *fmt, ...) {
 
 static char *trim(char *s) {
     if (!s) return s;
-    // left
     while (*s && isspace((unsigned char)*s)) s++;
-    if (!*s) return s;
-    // right
-    char *end = s + strlen(s) - 1;
-    while (end > s && isspace((unsigned char)*end)) {
-        *end = '\0';
-        end--;
-    }
+    char *end = s + strlen(s);
+    while (end > s && isspace((unsigned char)*(end-1))) *(--end) = '\0';
     return s;
 }
 
-static int ieq(const char *a, const char *b) {
-    while (*a && *b) {
-        if (tolower((unsigned char)*a) != tolower((unsigned char)*b)) return 0;
-        a++; b++;
-    }
-    return *a == '\0' && *b == '\0';
-}
-
 static int parse_bool(const char *v, int *out) {
-    if (ieq(v, "1") || ieq(v, "yes") || ieq(v, "true") || ieq(v, "on")) {
+    if (!v) return -1;
+    if (strcasecmp(v, "1") == 0 || strcasecmp(v, "yes") == 0 || strcasecmp(v, "true") == 0 || strcasecmp(v, "on") == 0) {
         *out = 1; return 0;
     }
-    if (ieq(v, "0") || ieq(v, "no") || ieq(v, "false") || ieq(v, "off")) {
+    if (strcasecmp(v, "0") == 0 || strcasecmp(v, "no") == 0 || strcasecmp(v, "false") == 0 || strcasecmp(v, "off") == 0) {
         *out = 0; return 0;
     }
     return -1;
@@ -173,150 +98,22 @@ static int parse_int(const char *v, int *out) {
     return 0;
 }
 
-/* host:port or udp://host:port → host+port */
-static int parse_host_port(const char *in, char *host_out, size_t host_len, int *port_out) {
-    if (!in || !*in) return -1;
-    const char *s = in;
-    if (strncasecmp(s, "udp://", 6) == 0) s += 6;
-    if (strncasecmp(s, "unix:", 5) == 0) {
-        // unix sockets not supported here for simplicity
-        return -1;
-    }
-    const char *colon = strrchr(s, ':');
-    if (!colon) return -1;
-    size_t hlen = (size_t)(colon - s);
-    if (hlen == 0 || hlen >= host_len) return -1;
-    memcpy(host_out, s, hlen);
-    host_out[hlen] = '\0';
-    int port;
-    if (parse_int(colon + 1, &port) != 0) return -1;
-    *port_out = port;
-    return 0;
-}
+/* Config */
 
-/* output endpoint: host:port or unix:/path */
-static int parse_output_endpoint(const char *in,
-                                 char *host_out, size_t host_len, int *port_out,
-                                 char *unix_out, size_t unix_len) {
-    if (!in || !*in) return -1;
-    if (strncasecmp(in, "unix:", 5) == 0) {
-        const char *p = in + 5;
-        size_t len = strlen(p);
-        if (len == 0 || len >= unix_len) return -1;
-        memcpy(unix_out, p, len + 1);
-        return 1; // unix socket
-    }
-    if (parse_host_port(in, host_out, host_len, port_out) != 0) return -1;
-    return 0; // host:port
-}
-
-/* General config parsing */
-
-static void init_general_defaults(void) {
+static void init_defaults(void) {
     memset(&g_cfg, 0, sizeof(g_cfg));
-    strcpy(g_cfg.wfb_nics, "wlan0");
-    g_cfg.fec_n = 12;
-    g_cfg.fec_k = 8;
-    g_cfg.mcs = 2;
-    g_cfg.tx_rcv_buf_size = 2097152;
-    g_cfg.rx_snd_buf_size = 2097152;
-    g_cfg.tx_snd_buf_size = 0;
-    g_cfg.fec_delay = 0;
-    g_cfg.fec_timeout = 0;
-    strcpy(g_cfg.frame_type, "data");
-    g_cfg.log_interval = 1000;
-    g_cfg.bandwidth = 20;
-    strcpy(g_cfg.wifi_region, "US");
-    g_cfg.wifi_txpower = 1500;
-    strcpy(g_cfg.guard_interval, "long");
-    strcpy(g_cfg.key_file, "/etc/gs.key");
-    g_cfg.init_cmd_count = 0;
-    g_cfg.cleanup_cmd_count = 0;
-
-    g_cfg.radio_port = 0;              // default: no -p, let WFB default
-
-    // SSE defaults
     g_cfg.sse_base_port = 18080;
     strcpy(g_cfg.sse_host, "0.0.0.0");
+    strcpy(g_cfg.rx_nics, "");
+    strcpy(g_cfg.tx_nics, "");
+    strcpy(g_cfg.master_node, "");
+    strcpy(g_cfg.link_id, "");
+    g_cfg.mcs = 0;
+    g_cfg.ldpc = 0;
+    g_cfg.stbc = 0;
+    strcpy(g_cfg.key_file, "");
+    g_cfg.log_interval = 0;
 }
-
-static void parse_general_kv(int line_no, const char *key, const char *val) {
-    if (ieq(key, "wfb_nics")) {
-        strncpy(g_cfg.wfb_nics, val, sizeof(g_cfg.wfb_nics)-1);
-    } else if (ieq(key, "wfb_tx")) {
-        strncpy(g_cfg.wfb_tx, val, sizeof(g_cfg.wfb_tx)-1);
-    } else if (ieq(key, "fec_n")) {
-        if (parse_int(val, &g_cfg.fec_n)) die("config:%d: invalid fec_n", line_no);
-    } else if (ieq(key, "fec_k")) {
-        if (parse_int(val, &g_cfg.fec_k)) die("config:%d: invalid fec_k", line_no);
-    } else if (ieq(key, "mcs")) {
-        if (parse_int(val, &g_cfg.mcs)) die("config:%d: invalid mcs", line_no);
-    } else if (ieq(key, "tx_rcv_buf_size")) {
-        if (parse_int(val, &g_cfg.tx_rcv_buf_size)) die("config:%d: invalid tx_rcv_buf_size", line_no);
-    } else if (ieq(key, "rx_snd_buf_size")) {
-        if (parse_int(val, &g_cfg.rx_snd_buf_size)) die("config:%d: invalid rx_snd_buf_size", line_no);
-    } else if (ieq(key, "tx_snd_buf_size")) {
-        if (parse_int(val, &g_cfg.tx_snd_buf_size)) die("config:%d: invalid tx_snd_buf_size", line_no);
-    } else if (ieq(key, "fec_delay")) {
-        if (parse_int(val, &g_cfg.fec_delay)) die("config:%d: invalid fec_delay", line_no);
-    } else if (ieq(key, "fec_timeout")) {
-        if (parse_int(val, &g_cfg.fec_timeout)) die("config:%d: invalid fec_timeout", line_no);
-    } else if (ieq(key, "frame_type")) {
-        if (!(ieq(val, "data") || ieq(val, "rts"))) {
-            die("config:%d: frame_type must be 'data' or 'rts'", line_no);
-        }
-        strncpy(g_cfg.frame_type, val, sizeof(g_cfg.frame_type)-1);
-    } else if (ieq(key, "log_interval")) {
-        if (parse_int(val, &g_cfg.log_interval)) die("config:%d: invalid log_interval", line_no);
-    } else if (ieq(key, "wifi_channel")) {
-        if (parse_int(val, &g_cfg.wifi_channel)) die("config:%d: invalid wifi_channel", line_no);
-    } else if (ieq(key, "stbc")) {
-        if (parse_int(val, &g_cfg.stbc)) die("config:%d: invalid stbc", line_no);
-    } else if (ieq(key, "ldpc")) {
-        if (parse_int(val, &g_cfg.ldpc)) die("config:%d: invalid ldpc", line_no);
-    } else if (ieq(key, "bandwidth")) {
-        if (parse_int(val, &g_cfg.bandwidth)) die("config:%d: invalid bandwidth", line_no);
-    } else if (ieq(key, "wifi_region")) {
-        strncpy(g_cfg.wifi_region, val, sizeof(g_cfg.wifi_region)-1);
-    } else if (ieq(key, "wifi_txpower")) {
-        if (parse_int(val, &g_cfg.wifi_txpower)) die("config:%d: invalid wifi_txpower", line_no);
-    } else if (ieq(key, "guard_interval")) {
-        if (!(ieq(val, "short") || ieq(val, "long"))) {
-            die("config:%d: guard_interval must be 'short' or 'long'", line_no);
-        }
-        strncpy(g_cfg.guard_interval, val, sizeof(g_cfg.guard_interval)-1);
-    } else if (ieq(key, "init_cmd")) {
-        if (g_cfg.init_cmd_count >= MAX_CMDS) {
-            die("config:%d: too many init_cmd entries (max %d)", line_no, MAX_CMDS);
-        }
-        strncpy(g_cfg.init_cmds[g_cfg.init_cmd_count], val,
-                sizeof(g_cfg.init_cmds[g_cfg.init_cmd_count])-1);
-        g_cfg.init_cmds[g_cfg.init_cmd_count][sizeof(g_cfg.init_cmds[g_cfg.init_cmd_count])-1] = '\0';
-        g_cfg.init_cmd_count++;
-    } else if (ieq(key, "cleanup_cmd")) {
-        if (g_cfg.cleanup_cmd_count >= MAX_CMDS) {
-            die("config:%d: too many cleanup_cmd entries (max %d)", line_no, MAX_CMDS);
-        }
-        strncpy(g_cfg.cleanup_cmds[g_cfg.cleanup_cmd_count], val,
-                sizeof(g_cfg.cleanup_cmds[g_cfg.cleanup_cmd_count])-1);
-        g_cfg.cleanup_cmds[g_cfg.cleanup_cmd_count][sizeof(g_cfg.cleanup_cmds[g_cfg.cleanup_cmd_count])-1] = '\0';
-        g_cfg.cleanup_cmd_count++;
-    } else if (ieq(key, "key_file")) {
-        strncpy(g_cfg.key_file, val, sizeof(g_cfg.key_file)-1);
-    } else if (ieq(key, "radio_port")) {
-        if (parse_int(val, &g_cfg.radio_port)) die("config:%d: invalid radio_port", line_no);
-    } else if (ieq(key, "sse_tail")) {
-        strncpy(g_cfg.sse_tail, val, sizeof(g_cfg.sse_tail)-1);
-    } else if (ieq(key, "sse_host")) {
-        strncpy(g_cfg.sse_host, val, sizeof(g_cfg.sse_host)-1);
-    } else if (ieq(key, "sse_base_port")) {
-        if (parse_int(val, &g_cfg.sse_base_port)) die("config:%d: invalid sse_base_port", line_no);
-    } else {
-        die("config:%d: unknown general key '%s'", line_no, key);
-    }
-}
-
-/* Instance parsing */
 
 static instance_t *add_instance(const char *name, int line_no) {
     if (g_instance_count >= MAX_INSTANCES) {
@@ -326,138 +123,67 @@ static instance_t *add_instance(const char *name, int line_no) {
     memset(inst, 0, sizeof(*inst));
     strncpy(inst->name, name, sizeof(inst->name)-1);
     inst->sse_port = 0;
-    inst->sse_enable = 0;
-    inst->kind = INST_KIND_UNKNOWN;
-    inst->radio_port = -1; // inherit general default unless explicitly set
-    inst->distributor = 0;
-    inst->inject_port = 0;
-    inst->agg_timeout_ms = -1;
-    inst->fec_n_override = -1;
-    inst->fec_k_override = -1;
-    inst->mcs_override = -1;
-    inst->stbc_override = -1;
-    inst->ldpc_override = -1;
-    inst->bandwidth_override = -1;
-    inst->guard_interval_override[0] = '\0';
-    inst->fwmark = -1;
-    inst->qdisc_enable = 0;
     return inst;
 }
 
+static void parse_general_kv(int line_no, const char *key, const char *val) {
+    if (strcasecmp(key, "sse_tail") == 0) {
+        strncpy(g_cfg.sse_tail, val, sizeof(g_cfg.sse_tail)-1);
+    } else if (strcasecmp(key, "sse_host") == 0) {
+        strncpy(g_cfg.sse_host, val, sizeof(g_cfg.sse_host)-1);
+    } else if (strcasecmp(key, "sse_base_port") == 0) {
+        if (parse_int(val, &g_cfg.sse_base_port)) die("config:%d: invalid sse_base_port", line_no);
+    } else if (strcasecmp(key, "init_cmd") == 0) {
+        if (g_cfg.init_cmd_count >= MAX_CMDS) die("config:%d: too many init_cmd entries (max %d)", line_no, MAX_CMDS);
+        strncpy(g_cfg.init_cmds[g_cfg.init_cmd_count], val, sizeof(g_cfg.init_cmds[g_cfg.init_cmd_count])-1);
+        g_cfg.init_cmds[g_cfg.init_cmd_count][sizeof(g_cfg.init_cmds[g_cfg.init_cmd_count])-1] = '\0';
+        g_cfg.init_cmd_count++;
+    } else if (strcasecmp(key, "cleanup_cmd") == 0) {
+        if (g_cfg.cleanup_cmd_count >= MAX_CMDS) die("config:%d: too many cleanup_cmd entries (max %d)", line_no, MAX_CMDS);
+        strncpy(g_cfg.cleanup_cmds[g_cfg.cleanup_cmd_count], val, sizeof(g_cfg.cleanup_cmds[g_cfg.cleanup_cmd_count])-1);
+        g_cfg.cleanup_cmds[g_cfg.cleanup_cmd_count][sizeof(g_cfg.cleanup_cmds[g_cfg.cleanup_cmd_count])-1] = '\0';
+        g_cfg.cleanup_cmd_count++;
+    } else if (strcasecmp(key, "rx_nics") == 0) {
+        strncpy(g_cfg.rx_nics, val, sizeof(g_cfg.rx_nics)-1);
+    } else if (strcasecmp(key, "tx_nics") == 0) {
+        strncpy(g_cfg.tx_nics, val, sizeof(g_cfg.tx_nics)-1);
+    } else if (strcasecmp(key, "master_node") == 0) {
+        strncpy(g_cfg.master_node, val, sizeof(g_cfg.master_node)-1);
+    } else if (strcasecmp(key, "link_id") == 0) {
+        strncpy(g_cfg.link_id, val, sizeof(g_cfg.link_id)-1);
+    } else if (strcasecmp(key, "mcs") == 0) {
+        if (parse_int(val, &g_cfg.mcs)) die("config:%d: invalid mcs", line_no);
+    } else if (strcasecmp(key, "ldpc") == 0) {
+        if (parse_int(val, &g_cfg.ldpc)) die("config:%d: invalid ldpc", line_no);
+    } else if (strcasecmp(key, "stbc") == 0) {
+        if (parse_int(val, &g_cfg.stbc)) die("config:%d: invalid stbc", line_no);
+    } else if (strcasecmp(key, "key_file") == 0) {
+        strncpy(g_cfg.key_file, val, sizeof(g_cfg.key_file)-1);
+    } else if (strcasecmp(key, "log_interval") == 0) {
+        if (parse_int(val, &g_cfg.log_interval)) die("config:%d: invalid log_interval", line_no);
+    } else {
+        die("config:%d: unknown general key '%s'", line_no, key);
+    }
+}
+
 static void parse_instance_kv(instance_t *inst, int line_no, const char *key, const char *val) {
-    if (ieq(key, "type")) {
-        strncpy(inst->type, val, sizeof(inst->type)-1);
-    } else if (ieq(key, "direction")) {
-        strncpy(inst->direction, val, sizeof(inst->direction)-1);
-    } else if (ieq(key, "input")) {
-        strncpy(inst->input, val, sizeof(inst->input)-1);
-    } else if (ieq(key, "output")) {
-        strncpy(inst->output, val, sizeof(inst->output)-1);
-    } else if (ieq(key, "linkid")) {
-        strncpy(inst->linkid, val, sizeof(inst->linkid)-1);
-    } else if (ieq(key, "control_port")) {
-        if (parse_int(val, &inst->control_port)) die("config:%d: invalid control_port", line_no);
-    } else if (ieq(key, "ifname")) {
-        strncpy(inst->ifname, val, sizeof(inst->ifname)-1);
-    } else if (ieq(key, "ifaddr")) {
-        strncpy(inst->ifaddr, val, sizeof(inst->ifaddr)-1);
-    } else if (ieq(key, "input_port")) {
-        if (parse_int(val, &inst->input_port)) die("config:%d: invalid input_port", line_no);
-    } else if (ieq(key, "output_port")) {
-        if (parse_int(val, &inst->output_port)) die("config:%d: invalid output_port", line_no);
-    } else if (ieq(key, "agg_timeout_ms")) {
-        if (parse_int(val, &inst->agg_timeout_ms)) die("config:%d: invalid agg_timeout_ms", line_no);
-    } else if (ieq(key, "peer_address")) {
-        strncpy(inst->peer_address, val, sizeof(inst->peer_address)-1);
-    } else if (ieq(key, "tx_name")) {
-        strncpy(inst->tx_name, val, sizeof(inst->tx_name)-1);
-    } else if (ieq(key, "rx_name")) {
-        strncpy(inst->rx_name, val, sizeof(inst->rx_name)-1);
-    } else if (ieq(key, "radio_port")) {
-        if (parse_int(val, &inst->radio_port)) die("config:%d: invalid radio_port", line_no);
-    } else if (ieq(key, "sse")) {
+    if (strcasecmp(key, "cmd") == 0) {
+        strncpy(inst->cmd, val, sizeof(inst->cmd)-1);
+    } else if (strcasecmp(key, "sse") == 0) {
         if (parse_bool(val, &inst->sse_enable)) die("config:%d: invalid sse value '%s'", line_no, val);
-    } else if (ieq(key, "sse_port")) {
+    } else if (strcasecmp(key, "sse_port") == 0) {
         if (parse_int(val, &inst->sse_port)) die("config:%d: invalid sse_port", line_no);
-    } else if (ieq(key, "sse_name")) {
+    } else if (strcasecmp(key, "sse_name") == 0) {
         strncpy(inst->sse_name, val, sizeof(inst->sse_name)-1);
-    } else if (ieq(key, "distributor")) {
-        if (parse_bool(val, &inst->distributor)) die("config:%d: invalid distributor value '%s'", line_no, val);
-    } else if (ieq(key, "inject_port")) {
-        if (parse_int(val, &inst->inject_port)) die("config:%d: invalid inject_port", line_no);
-    } else if (ieq(key, "frame_type")) {
-        // validated later only for TX kinds
-        strncpy(inst->frame_type, val, sizeof(inst->frame_type)-1);
-    } else if (ieq(key, "fec_n")) {
-        if (parse_int(val, &inst->fec_n_override)) die("config:%d: invalid fec_n", line_no);
-    } else if (ieq(key, "fec_k")) {
-        if (parse_int(val, &inst->fec_k_override)) die("config:%d: invalid fec_k", line_no);
-    } else if (ieq(key, "mcs")) {
-        if (parse_int(val, &inst->mcs_override)) die("config:%d: invalid mcs", line_no);
-    } else if (ieq(key, "stbc")) {
-        if (parse_int(val, &inst->stbc_override)) die("config:%d: invalid stbc", line_no);
-    } else if (ieq(key, "ldpc")) {
-        if (parse_int(val, &inst->ldpc_override)) die("config:%d: invalid ldpc", line_no);
-    } else if (ieq(key, "bandwidth")) {
-        if (parse_int(val, &inst->bandwidth_override)) die("config:%d: invalid bandwidth", line_no);
-    } else if (ieq(key, "guard_interval")) {
-        strncpy(inst->guard_interval_override, val, sizeof(inst->guard_interval_override)-1);
-    } else if (ieq(key, "fwmark")) {
-        if (parse_int(val, &inst->fwmark)) die("config:%d: invalid fwmark", line_no);
-    } else if (ieq(key, "qdisc")) {
-        if (parse_bool(val, &inst->qdisc_enable)) die("config:%d: invalid qdisc value '%s'", line_no, val);
+    } else if (strcasecmp(key, "quiet") == 0) {
+        if (parse_bool(val, &inst->quiet)) die("config:%d: invalid quiet value '%s'", line_no, val);
     } else {
         die("config:%d: unknown key '%s' in instance '%s'", line_no, key, inst->name);
     }
 }
 
-static inst_kind_t deduce_kind(const instance_t *inst) {
-    if (ieq(inst->type, "tunnel")) {
-        return INST_KIND_TUNNEL;
-    }
-    if (ieq(inst->type, "aggregator")) {
-        if (ieq(inst->direction, "tx")) return INST_KIND_TX_LOCAL;
-        return INST_KIND_RX_AGGREGATOR;
-    }
-    if (ieq(inst->type, "forwarder")) {
-        if (ieq(inst->direction, "tx")) return INST_KIND_TX_LOCAL;
-        return INST_KIND_RX_FORWARDER;
-    }
-    if (ieq(inst->type, "local")) {
-        if (ieq(inst->direction, "tx")) return INST_KIND_TX_LOCAL;
-        else return INST_KIND_RX_AGGREGATOR; // treat as local RX if needed
-    }
-    if (ieq(inst->type, "distributor")) {
-        return INST_KIND_TX_LOCAL;
-    }
-    if (ieq(inst->type, "injector")) {
-        return INST_KIND_TX_LOCAL;
-    }
-    return INST_KIND_UNKNOWN;
-}
-
-static void derive_missing_direction(instance_t *inst) {
-    if (inst->direction[0]) return;
-    if (ieq(inst->type, "distributor")) {
-        strcpy(inst->direction, "tx");
-        return;
-    }
-    if (ieq(inst->type, "injector")) {
-        strcpy(inst->direction, "tx");
-        return;
-    }
-    size_t len = strlen(inst->name);
-    if (len > 3 && strcmp(inst->name + len - 3, "-rx") == 0) {
-        strcpy(inst->direction, "rx");
-    } else if (len > 3 && strcmp(inst->name + len - 3, "-tx") == 0) {
-        strcpy(inst->direction, "tx");
-    }
-}
-
-/* Config file loader */
-
 static void load_config(const char *path) {
-    init_general_defaults();
+    init_defaults();
     g_instance_count = 0;
     memset(g_instances, 0, sizeof(g_instances));
 
@@ -472,7 +198,6 @@ static void load_config(const char *path) {
     while (fgets(linebuf, sizeof(linebuf), f)) {
         line_no++;
         char *line = linebuf;
-        // strip newline
         char *nl = strchr(line, '\n');
         if (nl) *nl = '\0';
         line = trim(line);
@@ -484,7 +209,7 @@ static void load_config(const char *path) {
             if (!rb) die("config:%d: missing ']'", line_no);
             *rb = '\0';
             char *secname = trim(line + 1);
-            if (ieq(secname, "general")) {
+            if (strcasecmp(secname, "general") == 0) {
                 section = SEC_GENERAL;
                 current_inst = NULL;
             } else if (strncasecmp(secname, "instance", 8) == 0) {
@@ -499,7 +224,6 @@ static void load_config(const char *path) {
             continue;
         }
 
-        // key=value
         char *eq = strchr(line, '=');
         if (!eq) die("config:%d: expected key=value", line_no);
         *eq = '\0';
@@ -519,648 +243,129 @@ static void load_config(const char *path) {
 
     fclose(f);
 
-    if (g_instance_count == 0) {
-        die("no instances defined in config");
-    }
+    if (g_instance_count == 0) die("no instances defined in config");
 
-    // Derive kind for each instance
     for (int i = 0; i < g_instance_count; i++) {
-        instance_t *inst = &g_instances[i];
-        derive_missing_direction(inst);
-        inst->kind = deduce_kind(inst);
-        if (inst->kind == INST_KIND_UNKNOWN) {
-            die("instance '%s': unknown/unsupported type='%s' direction='%s'",
-                inst->name, inst->type, inst->direction);
+        if (!g_instances[i].cmd[0]) {
+            die("instance '%s': cmd is required", g_instances[i].name);
         }
-        if (inst->agg_timeout_ms >= 0 && inst->kind != INST_KIND_TUNNEL) {
-            die("instance '%s': agg_timeout_ms is only valid for tunnel instances", inst->name);
-        }
-        if (inst->frame_type[0] && inst->kind != INST_KIND_TX_LOCAL) {
-            die("instance '%s': frame_type is only valid for TX instances", inst->name);
-        }
-        if (inst->frame_type[0] && !(ieq(inst->frame_type, "data") || ieq(inst->frame_type, "rts"))) {
-            die("instance '%s': frame_type must be 'data' or 'rts'", inst->name);
-        }
-        if ((inst->fec_n_override >= 0 || inst->fec_k_override >= 0) &&
-            inst->kind != INST_KIND_TX_LOCAL) {
-            die("instance '%s': fec_n/fec_k overrides are only valid for TX instances", inst->name);
-        }
-        if ((inst->mcs_override >= 0 || inst->stbc_override >= 0 ||
-             inst->ldpc_override >= 0 || inst->bandwidth_override >= 0 ||
-             inst->guard_interval_override[0]) &&
-            inst->kind != INST_KIND_TX_LOCAL) {
-            die("instance '%s': modem overrides (mcs/stbc/ldpc/bandwidth/guard_interval) are only valid for TX instances",
-                inst->name);
-        }
-        if (inst->guard_interval_override[0] &&
-            !(ieq(inst->guard_interval_override, "short") || ieq(inst->guard_interval_override, "long"))) {
-            die("instance '%s': guard_interval must be 'short' or 'long'", inst->name);
-        }
-        if (inst->fwmark >= 0 && inst->kind != INST_KIND_TX_LOCAL) {
-            die("instance '%s': fwmark is only valid for TX instances", inst->name);
-        }
-        if (inst->qdisc_enable && inst->kind != INST_KIND_TX_LOCAL) {
-            die("instance '%s': qdisc flag is only valid for TX instances", inst->name);
-        }
-        if (ieq(inst->type, "distributor")) {
-            inst->distributor = 1;
-            if (!ieq(inst->direction, "tx")) {
-                die("instance '%s': distributor must use direction=tx", inst->name);
+        if (g_instances[i].sse_enable) {
+            if (!g_cfg.sse_tail[0]) die("instance '%s': sse enabled but sse_tail not set in [general]", g_instances[i].name);
+            if (g_instances[i].sse_port == 0) g_instances[i].sse_port = g_cfg.sse_base_port++;
+            if (!g_instances[i].sse_name[0]) {
+                snprintf(g_instances[i].sse_name, sizeof(g_instances[i].sse_name), "%.255s", g_instances[i].name);
             }
-        }
-        if (ieq(inst->type, "injector") && inst->inject_port <= 0) {
-            die("instance '%s': injector requires inject_port", inst->name);
-        }
-        if (inst->inject_port > 0 && inst->distributor) {
-            die("instance '%s': injector mode (-I) cannot be combined with distributor (-d)", inst->name);
-        }
-        if (inst->inject_port > 0 && inst->kind != INST_KIND_TX_LOCAL) {
-            die("instance '%s': injector mode (-I) requires a TX kind", inst->name);
-        }
-        if (inst->kind == INST_KIND_TX_LOCAL &&
-            !inst->distributor && inst->inject_port <= 0 && !inst->input[0]) {
-            die("instance '%s': tx requires input=host:port, inject_port, or distributor", inst->name);
-        }
-        if (inst->sse_enable && !g_cfg.sse_tail[0]) {
-            die("instance '%s': sse enabled but sse_tail not set in [general]",
-                inst->name);
-        }
-        if (inst->sse_enable && inst->sse_port == 0) {
-            inst->sse_port = g_cfg.sse_base_port++;
-        }
-        if (inst->sse_enable && !inst->sse_name[0]) {
-            strncpy(inst->sse_name, inst->name,
-                    sizeof(inst->sse_name)-1);
         }
     }
 }
 
-/* Build argv for an instance (underlying wfb_* binary) */
+/* Hooks */
 
-static void add_arg(char **argv, int *argc, const char *a) {
-    if (*argc >= MAX_ARGS-1) die("too many arguments");
-    argv[(*argc)++] = (char *)a;
-}
+static void expand_placeholders(const char *in, char *out, size_t out_len) {
+    char mcs_buf[16], ldpc_buf[16], stbc_buf[16], log_buf[32];
+    snprintf(mcs_buf, sizeof(mcs_buf), "%d", g_cfg.mcs);
+    snprintf(ldpc_buf, sizeof(ldpc_buf), "%d", g_cfg.ldpc);
+    snprintf(stbc_buf, sizeof(stbc_buf), "%d", g_cfg.stbc);
+    snprintf(log_buf, sizeof(log_buf), "%d", g_cfg.log_interval);
 
-/*
- * We avoid heap allocation by using a small string storage pool per call.
- * 'arg_storage' holds numeric strings (ports, buf sizes, etc.). We must not
- * reuse the same char buffer for multiple argv entries.
- */
-
-static void build_wfb_command(const instance_t *inst,
-                              char *cmd_buf, size_t cmd_len,
-                              char **argv, int *argc) {
-    *argc = 0;
-    cmd_buf[0] = '\0';
-
-    char host[128];
-    int port = 0;
-    char unix_path[MAX_VALUE_LEN];
-
-    static char arg_storage[MAX_ARGS][MAX_VALUE_LEN];
-    int storage_idx = 0;
-
-    #define NEXT_SLOT() do { \
-        if (storage_idx >= MAX_ARGS) die("internal: arg_storage exhausted"); \
-    } while (0)
-
-    switch (inst->kind) {
-    case INST_KIND_RX_AGGREGATOR:
-        snprintf(cmd_buf, cmd_len, "wfb_rx");
-        add_arg(argv, argc, cmd_buf);
-        // -a <server_port> from input
-        if (parse_host_port(inst->input, host, sizeof(host), &port) != 0) {
-            die("instance '%s': invalid input '%s' (expected host:port)",
-                inst->name, inst->input);
-        }
-        NEXT_SLOT();
-        snprintf(arg_storage[storage_idx], sizeof(arg_storage[storage_idx]), "%d", port);
-        add_arg(argv, argc, "-a");
-        add_arg(argv, argc, arg_storage[storage_idx]);
-        storage_idx++;
-
-        // -K key_file
-        if (g_cfg.key_file[0]) {
-            add_arg(argv, argc, "-K");
-            add_arg(argv, argc, g_cfg.key_file);
-        }
-        // output → client_addr/client_port
-        int out_kind = parse_output_endpoint(inst->output, host, sizeof(host),
-                                             &port, unix_path, sizeof(unix_path));
-        if (out_kind == 1) {
-            add_arg(argv, argc, "-U");
-            add_arg(argv, argc, unix_path);
-        } else if (out_kind == 0) {
-            NEXT_SLOT();
-            snprintf(arg_storage[storage_idx], sizeof(arg_storage[storage_idx]), "%d", port);
-            add_arg(argv, argc, "-c");
-            add_arg(argv, argc, host);
-            add_arg(argv, argc, "-u");
-            add_arg(argv, argc, arg_storage[storage_idx]);
-            storage_idx++;
-        } else {
-            die("instance '%s': invalid output '%s' (host:port or unix:/path)",
-                inst->name, inst->output);
-        }
-
-        // buffers, log, linkid
-        if (g_cfg.tx_rcv_buf_size > 0) {
-            NEXT_SLOT();
-            snprintf(arg_storage[storage_idx], sizeof(arg_storage[storage_idx]),
-                     "%d", g_cfg.tx_rcv_buf_size);
-            add_arg(argv, argc, "-R");
-            add_arg(argv, argc, arg_storage[storage_idx]);
-            storage_idx++;
-        }
-        if (g_cfg.rx_snd_buf_size > 0) {
-            NEXT_SLOT();
-            snprintf(arg_storage[storage_idx], sizeof(arg_storage[storage_idx]),
-                     "%d", g_cfg.rx_snd_buf_size);
-            add_arg(argv, argc, "-s");
-            add_arg(argv, argc, arg_storage[storage_idx]);
-            storage_idx++;
-        }
-        if (g_cfg.log_interval > 0) {
-            NEXT_SLOT();
-            snprintf(arg_storage[storage_idx], sizeof(arg_storage[storage_idx]),
-                     "%d", g_cfg.log_interval);
-            add_arg(argv, argc, "-l");
-            add_arg(argv, argc, arg_storage[storage_idx]);
-            storage_idx++;
-        }
-        if (inst->linkid[0]) {
-            add_arg(argv, argc, "-i");
-            add_arg(argv, argc, inst->linkid);
-        }
-
-        // radio_port
-        {
-            int rp = (inst->radio_port >= 0) ? inst->radio_port : g_cfg.radio_port;
-            if (rp > 0) {
-                NEXT_SLOT();
-                snprintf(arg_storage[storage_idx], sizeof(arg_storage[storage_idx]), "%d", rp);
-                add_arg(argv, argc, "-p");
-                add_arg(argv, argc, arg_storage[storage_idx]);
-                storage_idx++;
+    struct kv { const char *key; const char *val; } table[] = {
+        {"$rx_nics", g_cfg.rx_nics},
+        {"$tx_nics", g_cfg.tx_nics},
+        {"$master_node", g_cfg.master_node},
+        {"$link_id", g_cfg.link_id},
+        {"$mcs", mcs_buf},
+        {"$ldpc", ldpc_buf},
+        {"$stbc", stbc_buf},
+        {"$key_file", g_cfg.key_file},
+        {"$log_interval", log_buf},
+    };
+    size_t pos = 0;
+    size_t out_pos = 0;
+    size_t in_len = strlen(in);
+    while (pos < in_len) {
+        int matched = 0;
+        for (size_t i = 0; i < sizeof(table)/sizeof(table[0]); i++) {
+            size_t klen = strlen(table[i].key);
+            if (klen > 0 && strncmp(in + pos, table[i].key, klen) == 0) {
+                size_t vlen = strlen(table[i].val);
+                if (out_pos + vlen >= out_len) die("expanded command too long");
+                memcpy(out + out_pos, table[i].val, vlen);
+                out_pos += vlen;
+                pos += klen;
+                matched = 1;
+                break;
             }
         }
-
-        // interfaces from WFB_NICS
-        {
-            char nics_copy[MAX_VALUE_LEN];
-            strncpy(nics_copy, g_cfg.wfb_nics, sizeof(nics_copy)-1);
-            nics_copy[sizeof(nics_copy)-1] = '\0';
-            char *tok = strtok(nics_copy, ",");
-            if (!tok) die("general: wfb_nics is empty");
-            while (tok) {
-                tok = trim(tok);
-                if (*tok) {
-                    NEXT_SLOT();
-                    strncpy(arg_storage[storage_idx], tok, sizeof(arg_storage[storage_idx])-1);
-                    arg_storage[storage_idx][sizeof(arg_storage[storage_idx])-1] = '\0';
-                    add_arg(argv, argc, arg_storage[storage_idx]);
-                    storage_idx++;
-                }
-                tok = strtok(NULL, ",");
-            }
+        if (!matched) {
+            if (out_pos + 1 >= out_len) die("expanded command too long");
+            out[out_pos++] = in[pos++];
         }
-        break;
-
-    case INST_KIND_RX_FORWARDER:
-        snprintf(cmd_buf, cmd_len, "wfb_rx");
-        add_arg(argv, argc, cmd_buf);
-        add_arg(argv, argc, "-f");
-        // output host:port → -c/-u
-        if (parse_host_port(inst->output, host, sizeof(host), &port) != 0) {
-            die("instance '%s': invalid output '%s'", inst->name, inst->output);
-        }
-        NEXT_SLOT();
-        snprintf(arg_storage[storage_idx], sizeof(arg_storage[storage_idx]), "%d", port);
-        add_arg(argv, argc, "-c");
-        add_arg(argv, argc, host);
-        add_arg(argv, argc, "-u");
-        add_arg(argv, argc, arg_storage[storage_idx]);
-        storage_idx++;
-
-        if (inst->linkid[0]) {
-            add_arg(argv, argc, "-i");
-            add_arg(argv, argc, inst->linkid);
-        }
-
-        // radio_port
-        {
-            int rp = (inst->radio_port >= 0) ? inst->radio_port : g_cfg.radio_port;
-            if (rp > 0) {
-                NEXT_SLOT();
-                snprintf(arg_storage[storage_idx], sizeof(arg_storage[storage_idx]), "%d", rp);
-                add_arg(argv, argc, "-p");
-                add_arg(argv, argc, arg_storage[storage_idx]);
-                storage_idx++;
-            }
-        }
-
-        // interfaces
-        {
-            char nics_copy[MAX_VALUE_LEN];
-            strncpy(nics_copy, g_cfg.wfb_nics, sizeof(nics_copy)-1);
-            nics_copy[sizeof(nics_copy)-1] = '\0';
-            char *tok = strtok(nics_copy, ",");
-            if (!tok) die("general: wfb_nics is empty");
-            while (tok) {
-                tok = trim(tok);
-                if (*tok) {
-                    NEXT_SLOT();
-                    strncpy(arg_storage[storage_idx], tok, sizeof(arg_storage[storage_idx])-1);
-                    arg_storage[storage_idx][sizeof(arg_storage[storage_idx])-1] = '\0';
-                    add_arg(argv, argc, arg_storage[storage_idx]);
-                    storage_idx++;
-                }
-                tok = strtok(NULL, ",");
-            }
-        }
-        break;
-
-    case INST_KIND_TX_LOCAL:
-        snprintf(cmd_buf, cmd_len, "wfb_tx");
-        add_arg(argv, argc, cmd_buf);
-
-        int distributor_mode = inst->distributor;
-        int injector_mode = (inst->inject_port > 0);
-        if (distributor_mode) {
-            add_arg(argv, argc, "-d");
-        }
-
-        int fec_k_val = (inst->fec_k_override >= 0) ? inst->fec_k_override : g_cfg.fec_k;
-        int fec_n_val = (inst->fec_n_override >= 0) ? inst->fec_n_override : g_cfg.fec_n;
-        int mcs_val = (inst->mcs_override >= 0) ? inst->mcs_override : g_cfg.mcs;
-        int stbc_val = (inst->stbc_override >= 0) ? inst->stbc_override : g_cfg.stbc;
-        int ldpc_val = (inst->ldpc_override >= 0) ? inst->ldpc_override : g_cfg.ldpc;
-        int bw_val = (inst->bandwidth_override >= 0) ? inst->bandwidth_override : g_cfg.bandwidth;
-        const char *guard_val = inst->guard_interval_override[0] ? inst->guard_interval_override : g_cfg.guard_interval;
-
-        // -K, -k, -n
-        if (!injector_mode) {
-            if (g_cfg.key_file[0]) {
-                add_arg(argv, argc, "-K");
-                add_arg(argv, argc, g_cfg.key_file);
-            }
-            NEXT_SLOT();
-            snprintf(arg_storage[storage_idx], sizeof(arg_storage[storage_idx]), "%d", fec_k_val);
-            add_arg(argv, argc, "-k");
-            add_arg(argv, argc, arg_storage[storage_idx]);
-            storage_idx++;
-
-            NEXT_SLOT();
-            snprintf(arg_storage[storage_idx], sizeof(arg_storage[storage_idx]), "%d", fec_n_val);
-            add_arg(argv, argc, "-n");
-            add_arg(argv, argc, arg_storage[storage_idx]);
-            storage_idx++;
-        }
-
-        // input host:port → -u port
-        if (!injector_mode && inst->input[0]) {
-            if (parse_host_port(inst->input, host, sizeof(host), &port) != 0) {
-                die("instance '%s': invalid input '%s'", inst->name, inst->input);
-            }
-            NEXT_SLOT();
-            snprintf(arg_storage[storage_idx], sizeof(arg_storage[storage_idx]), "%d", port);
-            add_arg(argv, argc, "-u");
-            add_arg(argv, argc, arg_storage[storage_idx]);
-            storage_idx++;
-        }
-        if (injector_mode) {
-            NEXT_SLOT();
-            snprintf(arg_storage[storage_idx], sizeof(arg_storage[storage_idx]), "%d",
-                     inst->inject_port);
-            add_arg(argv, argc, "-I");
-            add_arg(argv, argc, arg_storage[storage_idx]);
-            storage_idx++;
-        }
-
-        if (!injector_mode && inst->control_port > 0) {
-            NEXT_SLOT();
-            snprintf(arg_storage[storage_idx], sizeof(arg_storage[storage_idx]), "%d",
-                     inst->control_port);
-            add_arg(argv, argc, "-C");
-            add_arg(argv, argc, arg_storage[storage_idx]);
-            storage_idx++;
-        }
-        if (g_cfg.tx_rcv_buf_size > 0) {
-            NEXT_SLOT();
-            snprintf(arg_storage[storage_idx], sizeof(arg_storage[storage_idx]), "%d",
-                     g_cfg.tx_rcv_buf_size);
-            add_arg(argv, argc, "-R");
-            add_arg(argv, argc, arg_storage[storage_idx]);
-            storage_idx++;
-        }
-        if (!injector_mode && g_cfg.tx_snd_buf_size > 0) {
-            NEXT_SLOT();
-            snprintf(arg_storage[storage_idx], sizeof(arg_storage[storage_idx]), "%d",
-                     g_cfg.tx_snd_buf_size);
-            add_arg(argv, argc, "-s");
-            add_arg(argv, argc, arg_storage[storage_idx]);
-            storage_idx++;
-        }
-        if (g_cfg.log_interval > 0) {
-            NEXT_SLOT();
-            snprintf(arg_storage[storage_idx], sizeof(arg_storage[storage_idx]),
-                     "%d", g_cfg.log_interval);
-            add_arg(argv, argc, "-l");
-            add_arg(argv, argc, arg_storage[storage_idx]);
-            storage_idx++;
-        }
-        // modem parameters (TX only, skip for injector which is a separate mode)
-        if (!injector_mode && g_cfg.fec_delay > 0) {
-            NEXT_SLOT();
-            snprintf(arg_storage[storage_idx], sizeof(arg_storage[storage_idx]), "%d", g_cfg.fec_delay);
-            add_arg(argv, argc, "-F");
-            add_arg(argv, argc, arg_storage[storage_idx]);
-            storage_idx++;
-        }
-        if (!injector_mode && bw_val > 0) {
-            NEXT_SLOT();
-            snprintf(arg_storage[storage_idx], sizeof(arg_storage[storage_idx]), "%d", bw_val);
-            add_arg(argv, argc, "-B");
-            add_arg(argv, argc, arg_storage[storage_idx]);
-            storage_idx++;
-        }
-        if (!injector_mode && guard_val[0]) {
-            add_arg(argv, argc, "-G");
-            add_arg(argv, argc, guard_val);
-        }
-        const char *frame = inst->frame_type[0] ? inst->frame_type : g_cfg.frame_type;
-        if (!injector_mode && frame[0]) {
-            add_arg(argv, argc, "-f");
-            add_arg(argv, argc, frame);
-        }
-        if (!injector_mode && g_cfg.fec_timeout > 0) {
-            NEXT_SLOT();
-            snprintf(arg_storage[storage_idx], sizeof(arg_storage[storage_idx]), "%d", g_cfg.fec_timeout);
-            add_arg(argv, argc, "-T");
-            add_arg(argv, argc, arg_storage[storage_idx]);
-            storage_idx++;
-        }
-        if (!injector_mode) {
-            NEXT_SLOT();
-            snprintf(arg_storage[storage_idx], sizeof(arg_storage[storage_idx]), "%d", mcs_val);
-            add_arg(argv, argc, "-M");
-            add_arg(argv, argc, arg_storage[storage_idx]);
-            storage_idx++;
-
-            NEXT_SLOT();
-            snprintf(arg_storage[storage_idx], sizeof(arg_storage[storage_idx]), "%d", stbc_val);
-            add_arg(argv, argc, "-S");
-            add_arg(argv, argc, arg_storage[storage_idx]);
-            storage_idx++;
-
-            NEXT_SLOT();
-            snprintf(arg_storage[storage_idx], sizeof(arg_storage[storage_idx]), "%d", ldpc_val);
-            add_arg(argv, argc, "-L");
-            add_arg(argv, argc, arg_storage[storage_idx]);
-            storage_idx++;
-        }
-
-        if (!injector_mode && inst->linkid[0]) {
-            add_arg(argv, argc, "-i");
-            add_arg(argv, argc, inst->linkid);
-        }
-
-        // radio_port
-        {
-            int rp = (inst->radio_port >= 0) ? inst->radio_port : g_cfg.radio_port;
-            if (!injector_mode && rp > 0) {
-                NEXT_SLOT();
-                snprintf(arg_storage[storage_idx], sizeof(arg_storage[storage_idx]), "%d", rp);
-                add_arg(argv, argc, "-p");
-                add_arg(argv, argc, arg_storage[storage_idx]);
-                storage_idx++;
-            }
-        }
-        if (!injector_mode && inst->fwmark >= 0) {
-            NEXT_SLOT();
-            snprintf(arg_storage[storage_idx], sizeof(arg_storage[storage_idx]), "%d", inst->fwmark);
-            add_arg(argv, argc, "-P");
-            add_arg(argv, argc, arg_storage[storage_idx]);
-            storage_idx++;
-        }
-        if (inst->qdisc_enable) {
-            add_arg(argv, argc, "-Q");
-        }
-
-        if (distributor_mode) {
-            if (!inst->output[0]) {
-                die("instance '%s': distributor requires output host list", inst->name);
-            }
-            add_arg(argv, argc, inst->output);
-        } else {
-            // Interfaces: prefer wfb_tx if set, else first wfb_nics
-            if (g_cfg.wfb_tx[0]) {
-                add_arg(argv, argc, g_cfg.wfb_tx);
-            } else {
-                char nics_copy[MAX_VALUE_LEN];
-                strncpy(nics_copy, g_cfg.wfb_nics, sizeof(nics_copy)-1);
-                nics_copy[sizeof(nics_copy)-1] = '\0';
-                char *tok = strtok(nics_copy, ",");
-                if (!tok) die("general: wfb_nics is empty");
-                tok = trim(tok);
-                NEXT_SLOT();
-                strncpy(arg_storage[storage_idx], tok, sizeof(arg_storage[storage_idx])-1);
-                arg_storage[storage_idx][sizeof(arg_storage[storage_idx])-1] = '\0';
-                add_arg(argv, argc, arg_storage[storage_idx]);
-                storage_idx++;
-            }
-        }
-        break;
-
-    case INST_KIND_TUNNEL:
-        snprintf(cmd_buf, cmd_len, "wfb_tun");
-        add_arg(argv, argc, cmd_buf);
-        if (inst->ifname[0]) {
-            add_arg(argv, argc, "-t");
-            add_arg(argv, argc, inst->ifname);
-        }
-        if (inst->ifaddr[0]) {
-            add_arg(argv, argc, "-a");
-            add_arg(argv, argc, inst->ifaddr);
-        }
-        if (inst->input_port > 0) {
-            NEXT_SLOT();
-            snprintf(arg_storage[storage_idx], sizeof(arg_storage[storage_idx]),
-                     "%d", inst->input_port);
-            add_arg(argv, argc, "-l");
-            add_arg(argv, argc, arg_storage[storage_idx]);
-            storage_idx++;
-        }
-        if (inst->output_port > 0) {
-            NEXT_SLOT();
-            snprintf(arg_storage[storage_idx], sizeof(arg_storage[storage_idx]),
-                     "%d", inst->output_port);
-            add_arg(argv, argc, "-u");
-            add_arg(argv, argc, arg_storage[storage_idx]);
-            storage_idx++;
-        }
-        if (inst->agg_timeout_ms >= 0) {
-            NEXT_SLOT();
-            snprintf(arg_storage[storage_idx], sizeof(arg_storage[storage_idx]),
-                     "%d", inst->agg_timeout_ms);
-            add_arg(argv, argc, "-T");
-            add_arg(argv, argc, arg_storage[storage_idx]);
-            storage_idx++;
-        }
-        if (inst->peer_address[0]) {
-            add_arg(argv, argc, "-c");
-            add_arg(argv, argc, inst->peer_address);
-        } else {
-            die("instance '%s': tunnel requires peer_address for -c", inst->name);
-        }
-        break;
-
-    default:
-        die("instance '%s': unsupported kind", inst->name);
     }
-
-    argv[*argc] = NULL;
+    if (out_pos >= out_len) die("expanded command too long");
+    out[out_pos] = '\0';
 }
 
-/* Build final command: either sse_tail -- wfb_* or wfb_* directly */
+static void run_commands(char cmds[][MAX_VALUE_LEN], int count, const char *phase) {
+    for (int i = 0; i < count; i++) {
+        char expanded[MAX_CMD_LEN];
+        expand_placeholders(cmds[i], expanded, sizeof(expanded));
+        fprintf(stderr, "forker: running %s command: %s\n", phase, expanded);
+        pid_t pid = fork();
+        if (pid < 0) die("%s command fork failed: %s", phase, strerror(errno));
+        if (pid == 0) {
+            execl("/bin/sh", "sh", "-c", expanded, (char *)NULL);
+            fprintf(stderr, "forker: exec failed for %s command '%s': %s\n", phase, expanded, strerror(errno));
+            _exit(127);
+        }
+        int status;
+        if (waitpid(pid, &status, 0) < 0) die("%s command waitpid failed: %s", phase, strerror(errno));
+        if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+            die("%s command '%s' failed (status %d)", phase, expanded,
+                WIFEXITED(status) ? WEXITSTATUS(status) : -1);
+        }
+    }
+}
 
-static void build_final_command(const instance_t *inst,
-                                char *cmd_buf, size_t cmd_len,
-                                char **argv, int *argc) {
-    static char inner_cmd_buf[MAX_VALUE_LEN];
-    static char *inner_argv[MAX_ARGS];
-    int inner_argc = 0;
+/* Build commands */
 
-    build_wfb_command(inst, inner_cmd_buf, sizeof(inner_cmd_buf),
-                      inner_argv, &inner_argc);
+static void build_command(const instance_t *inst, char **argv, int *argc, char *exec_path, size_t exec_len) {
+    char expanded_cmd[MAX_CMD_LEN];
+    expand_placeholders(inst->cmd, expanded_cmd, sizeof(expanded_cmd));
 
     if (inst->sse_enable) {
-        // sse_tail -p <port> -h host -- inner_cmd ...
+        snprintf(exec_path, exec_len, "%s", g_cfg.sse_tail);
         *argc = 0;
-        snprintf(cmd_buf, cmd_len, "%s", g_cfg.sse_tail);
-        add_arg(argv, argc, cmd_buf);
+        argv[(*argc)++] = exec_path;
 
         static char portbuf[32];
         snprintf(portbuf, sizeof(portbuf), "%d", inst->sse_port);
-        add_arg(argv, argc, "-p");
-        add_arg(argv, argc, portbuf);
+        argv[(*argc)++] = "-p";
+        argv[(*argc)++] = portbuf;
 
         if (g_cfg.sse_host[0]) {
-            add_arg(argv, argc, "-h");
-            add_arg(argv, argc, g_cfg.sse_host);
+            argv[(*argc)++] = "-h";
+            argv[(*argc)++] = g_cfg.sse_host;
         }
-
-        // Optional name: pass as -n if available
         if (inst->sse_name[0]) {
-            add_arg(argv, argc, "-n");
-            add_arg(argv, argc, inst->sse_name);
+            argv[(*argc)++] = "-n";
+            argv[(*argc)++] = (char *)inst->sse_name;
         }
-
-        add_arg(argv, argc, "--");
-        for (int i = 0; i < inner_argc; i++) {
-            add_arg(argv, argc, inner_argv[i]);
-        }
+        argv[(*argc)++] = "--";
+        argv[(*argc)++] = "/bin/sh";
+        argv[(*argc)++] = "-c";
+        argv[(*argc)++] = expanded_cmd;
         argv[*argc] = NULL;
     } else {
-        // direct wfb_* command
-        *argc = inner_argc;
-        for (int i = 0; i < inner_argc; i++) {
-            argv[i] = inner_argv[i];
-        }
+        snprintf(exec_path, exec_len, "%s", "/bin/sh");
+        *argc = 0;
+        argv[(*argc)++] = exec_path;
+        argv[(*argc)++] = "-c";
+        argv[(*argc)++] = expanded_cmd;
         argv[*argc] = NULL;
-        snprintf(cmd_buf, cmd_len, "%s", inner_argv[0]);
     }
 }
 
-/* Process supervision */
-
-static void signal_handler(int sig) {
-    switch (sig) {
-    case SIGINT:
-    case SIGTERM:
-        g_stop_requested = 1;
-        break;
-    case SIGHUP:
-        g_reload_requested = 1;
-        break;
-    case SIGUSR1:
-        g_status_requested = 1;
-        break;
-    default:
-        break;
-    }
-}
-
-// Build all commands up front to catch config errors before forking children.
-static void validate_all_commands(void) {
-    for (int i = 0; i < g_instance_count; i++) {
-        char cmd_buf[MAX_VALUE_LEN];
-        char *argv[MAX_ARGS];
-        int argc = 0;
-        build_final_command(&g_instances[i], cmd_buf, sizeof(cmd_buf), argv, &argc);
-    }
-}
-
-static void start_children(void) {
-    for (int i = 0; i < g_instance_count; i++) {
-        instance_t *inst = &g_instances[i];
-        char cmd_buf[MAX_VALUE_LEN];
-        char *argv[MAX_ARGS];
-        int argc = 0;
-
-        inst->exit_status = 0;
-
-        build_final_command(inst, cmd_buf, sizeof(cmd_buf), argv, &argc);
-
-        fprintf(stderr, "forker: starting instance '%s':", inst->name);
-        for (int k = 0; k < argc; k++) {
-            fprintf(stderr, " %s", argv[k]);
-        }
-        fprintf(stderr, "\n");
-
-        pid_t pid = fork();
-        if (pid < 0) {
-            die("fork failed for instance '%s': %s", inst->name, strerror(errno));
-        } else if (pid == 0) {
-            // child
-            if (!inst->sse_enable) {
-                int nullfd = open("/dev/null", O_RDWR);
-                if (nullfd >= 0) {
-                    dup2(nullfd, STDOUT_FILENO);
-                    dup2(nullfd, STDERR_FILENO);
-                    if (nullfd > 2) close(nullfd);
-                }
-            }
-            execvp(cmd_buf, argv);
-            fprintf(stderr, "forker: execvp failed for '%s': %s\n", cmd_buf, strerror(errno));
-            _exit(127);
-        } else {
-            inst->pid = pid;
-            inst->running = 1;
-        }
-    }
-}
-
-static void dump_status(const char *reason) {
-    fprintf(stderr, "forker: status (%s):\n", reason);
-    for (int i = 0; i < g_instance_count; i++) {
-        instance_t *inst = &g_instances[i];
-        if (inst->running) {
-            fprintf(stderr, "  %s: running (pid %d)\n", inst->name, inst->pid);
-        } else if (inst->pid > 0) {
-            if (WIFEXITED(inst->exit_status)) {
-                fprintf(stderr, "  %s: exited pid %d status %d\n", inst->name, inst->pid, WEXITSTATUS(inst->exit_status));
-            } else if (WIFSIGNALED(inst->exit_status)) {
-                fprintf(stderr, "  %s: exited pid %d signal %d\n", inst->name, inst->pid, WTERMSIG(inst->exit_status));
-            } else {
-                fprintf(stderr, "  %s: exited pid %d status %d\n", inst->name, inst->pid, inst->exit_status);
-            }
-        } else {
-            fprintf(stderr, "  %s: not started\n", inst->name);
-        }
-    }
-}
+/* Supervision */
 
 static void shutdown_all(int failed_idx, int failed_status) {
     if (failed_idx >= 0) {
@@ -1179,76 +384,29 @@ static void shutdown_all(int failed_idx, int failed_status) {
         fprintf(stderr, "forker: shutdown requested, terminating all children\n");
     }
 
-    // Send SIGTERM to all running children
     for (int i = 0; i < g_instance_count; i++) {
         if (g_instances[i].running && g_instances[i].pid > 0) {
             kill(g_instances[i].pid, SIGTERM);
         }
     }
 
-    int remaining = 0;
-    for (int i = 0; i < g_instance_count; i++) {
-        if (g_instances[i].running) remaining++;
-    }
-
-    // Grace period for SIGTERM deliveries
-    const int grace_seconds = 5;
-    int waited = 0;
-    while (remaining > 0 && waited < grace_seconds) {
-        int status;
-        pid_t pid = waitpid(-1, &status, WNOHANG);
-        if (pid > 0) {
-            for (int i = 0; i < g_instance_count; i++) {
-                if (g_instances[i].pid == pid && g_instances[i].running) {
-                    g_instances[i].exit_status = status;
-                    g_instances[i].running = 0;
-                    remaining--;
-                    break;
-                }
-            }
-            continue;
-        }
-        if (pid < 0) {
-            if (errno == EINTR) continue;
-            break;
-        }
-        sleep(1);
-        waited++;
-    }
-
-    // Escalate to SIGKILL if any children remain
-    if (remaining > 0) {
-        fprintf(stderr, "forker: %d child(ren) still running after %d seconds, sending SIGKILL\n",
-                remaining, grace_seconds);
-        for (int i = 0; i < g_instance_count; i++) {
-            if (g_instances[i].running && g_instances[i].pid > 0) {
-                kill(g_instances[i].pid, SIGKILL);
-            }
-        }
-    }
-
-    // Reap any remaining children
-    while (remaining > 0) {
+    int still = 1;
+    while (still) {
         int status;
         pid_t pid = waitpid(-1, &status, 0);
-        if (pid > 0) {
-            for (int i = 0; i < g_instance_count; i++) {
-                if (g_instances[i].pid == pid && g_instances[i].running) {
-                    g_instances[i].exit_status = status;
-                    g_instances[i].running = 0;
-                    remaining--;
-                    break;
-                }
-            }
-            continue;
-        }
-        if (pid < 0) {
+        if (pid <= 0) {
             if (errno == EINTR) continue;
             break;
         }
+        for (int i = 0; i < g_instance_count; i++) {
+            if (g_instances[i].pid == pid) {
+                g_instances[i].exit_status = status;
+                g_instances[i].running = 0;
+                break;
+            }
+        }
     }
 
-    // Summary
     fprintf(stderr, "forker: summary:\n");
     for (int i = 0; i < g_instance_count; i++) {
         instance_t *inst = &g_instances[i];
@@ -1262,75 +420,72 @@ static void shutdown_all(int failed_idx, int failed_status) {
     }
 }
 
-static int expand_wfb_nics(const char *in, char *out, size_t out_len) {
-    const char *needle = "$wfb_nics";
-    size_t needle_len = strlen(needle);
-    size_t in_len = strlen(in);
-    size_t pos = 0;
-    size_t out_pos = 0;
-
-    while (pos < in_len) {
-        if (strncmp(in + pos, needle, needle_len) == 0) {
-            size_t repl_len = strlen(g_cfg.wfb_nics);
-            if (out_pos + repl_len >= out_len) return -1;
-            memcpy(out + out_pos, g_cfg.wfb_nics, repl_len);
-            out_pos += repl_len;
-            pos += needle_len;
-        } else {
-            if (out_pos + 1 >= out_len) return -1;
-            out[out_pos++] = in[pos++];
-        }
-    }
-    if (out_pos >= out_len) return -1;
-    out[out_pos] = '\0';
-    return 0;
+static void signal_handler(int sig) {
+    (void)sig;
+    g_stop_requested = 1;
 }
 
-static void run_commands(char cmds[][MAX_VALUE_LEN], int count, const char *phase) {
-    for (int i = 0; i < count; i++) {
-        char expanded[MAX_VALUE_LEN];
-        if (expand_wfb_nics(cmds[i], expanded, sizeof(expanded)) != 0) {
-            die("failed to expand %s command '%s' (too long?)", phase, cmds[i]);
+static void start_children(void) {
+    for (int i = 0; i < g_instance_count; i++) {
+        instance_t *inst = &g_instances[i];
+        char exec_path[MAX_VALUE_LEN];
+        char *argv[MAX_ARGS];
+        int argc = 0;
+
+        build_command(inst, argv, &argc, exec_path, sizeof(exec_path));
+
+        fprintf(stderr, "forker: starting instance '%s':", inst->name);
+        for (int k = 0; k < argc; k++) {
+            fprintf(stderr, " %s", argv[k]);
         }
-        fprintf(stderr, "forker: running %s command: %s\n", phase, expanded);
+        fprintf(stderr, "\n");
+
         pid_t pid = fork();
-        if (pid < 0) die("%s command fork failed: %s", phase, strerror(errno));
-        if (pid == 0) {
-            execl("/bin/sh", "sh", "-c", expanded, (char *)NULL);
-            fprintf(stderr, "forker: exec failed for %s command '%s': %s\n", phase, expanded, strerror(errno));
+        if (pid < 0) {
+            die("fork failed for instance '%s': %s", inst->name, strerror(errno));
+        } else if (pid == 0) {
+            if (!inst->sse_enable && inst->quiet) {
+                int nullfd = open("/dev/null", O_RDWR);
+                if (nullfd >= 0) {
+                    dup2(nullfd, STDOUT_FILENO);
+                    dup2(nullfd, STDERR_FILENO);
+                    if (nullfd > 2) close(nullfd);
+                }
+            }
+            execvp(exec_path, argv);
+            fprintf(stderr, "forker: execvp failed for '%s': %s\n", exec_path, strerror(errno));
             _exit(127);
-        }
-        int status;
-        if (waitpid(pid, &status, 0) < 0) die("%s command waitpid failed: %s", phase, strerror(errno));
-        if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
-            die("%s command '%s' failed (status %d)", phase, expanded,
-                WIFEXITED(status) ? WEXITSTATUS(status) : -1);
+        } else {
+            inst->pid = pid;
+            inst->running = 1;
         }
     }
 }
 
-static int supervise_children(int *failed_idx_out, int *failed_status_out) {
+int main(int argc, char **argv) {
+    const char *config_path = "wfb.conf";
+    if (argc > 1) config_path = argv[1];
+
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = signal_handler;
+    sigaction(SIGINT, &sa, NULL);
+    sigaction(SIGTERM, &sa, NULL);
+
+    load_config(config_path);
+
+    run_commands(g_cfg.init_cmds, g_cfg.init_cmd_count, "init");
+
+    start_children();
+
     int running = g_instance_count;
     int shutdown_initiated = 0;
     int failed_idx = -1;
     int failed_status = 0;
-    int reload_triggered = 0;
 
     while (running > 0) {
-        if (g_status_requested) {
-            dump_status("SIGUSR1");
-            g_status_requested = 0;
-        }
-
         if (g_stop_requested && !shutdown_initiated) {
             shutdown_initiated = 1;
-            failed_idx = -1;
-            failed_status = 0;
-            break;
-        }
-        if (g_reload_requested && !shutdown_initiated) {
-            shutdown_initiated = 1;
-            reload_triggered = 1;
             failed_idx = -1;
             failed_status = 0;
             break;
@@ -1350,10 +505,7 @@ static int supervise_children(int *failed_idx_out, int *failed_status_out) {
                 break;
             }
         }
-        if (idx < 0) {
-            fprintf(stderr, "forker: reaped unknown child pid %d\n", (int)pid);
-            continue;
-        }
+        if (idx < 0) continue;
 
         g_instances[idx].exit_status = status;
         g_instances[idx].running = 0;
@@ -1368,52 +520,7 @@ static int supervise_children(int *failed_idx_out, int *failed_status_out) {
     }
 
     shutdown_all(failed_idx, failed_status);
-
-    if (failed_idx_out) *failed_idx_out = failed_idx;
-    if (failed_status_out) *failed_status_out = failed_status;
-    return reload_triggered;
-}
-
-int main(int argc, char **argv) {
-    g_config_path = "wfb.conf";
-    if (argc > 1) g_config_path = argv[1];
-
-    struct sigaction sa;
-    memset(&sa, 0, sizeof(sa));
-    sa.sa_handler = signal_handler;
-    sigaction(SIGINT, &sa, NULL);
-    sigaction(SIGTERM, &sa, NULL);
-    sigaction(SIGHUP, &sa, NULL);
-    sigaction(SIGUSR1, &sa, NULL);
-
-    int exit_code = 0;
-
-    for (;;) {
-        g_reload_requested = 0;
-        g_status_requested = 0;
-
-        load_config(g_config_path);
-        validate_all_commands();
-
-        if (g_stop_requested) break;
-
-        run_commands(g_cfg.init_cmds, g_cfg.init_cmd_count, "init");
-        start_children();
-
-        int failed_idx = -1;
-        int failed_status = 0;
-        int reload_now = supervise_children(&failed_idx, &failed_status);
-
-        if (failed_idx >= 0) exit_code = 2;
-
-        if (g_stop_requested || !reload_now) {
-            break;
-        }
-
-        fprintf(stderr, "forker: reload requested, restarting children\n");
-    }
-
     run_commands(g_cfg.cleanup_cmds, g_cfg.cleanup_cmd_count, "cleanup");
 
-    return exit_code;
+    return (failed_idx >= 0) ? 2 : 0;
 }

@@ -2,7 +2,7 @@
 # Simple control script for forker (no start-stop-daemon, no PID files)
 
 DAEMON="forker"
-DAEMON_ARGS="/etc/forker.conf"
+DAEMON_ARGS="/etc/wfb.conf"
 
 # Try to find PIDs using pidof, fall back to pgrep
 get_pids() {
