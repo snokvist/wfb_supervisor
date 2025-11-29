@@ -91,6 +91,8 @@ typedef struct {
     int  ldpc_override;
     int  bandwidth_override;
     char guard_interval_override[MAX_VALUE_LEN];
+    int  fwmark;                    // wfb_tx -P
+    int  qdisc_enable;              // wfb_tx -Q
 
     // derived
     inst_kind_t kind;
@@ -312,6 +314,8 @@ static instance_t *add_instance(const char *name, int line_no) {
     inst->ldpc_override = -1;
     inst->bandwidth_override = -1;
     inst->guard_interval_override[0] = '\0';
+    inst->fwmark = -1;
+    inst->qdisc_enable = 0;
     return inst;
 }
 
@@ -373,6 +377,10 @@ static void parse_instance_kv(instance_t *inst, int line_no, const char *key, co
         if (parse_int(val, &inst->bandwidth_override)) die("config:%d: invalid bandwidth", line_no);
     } else if (ieq(key, "guard_interval")) {
         strncpy(inst->guard_interval_override, val, sizeof(inst->guard_interval_override)-1);
+    } else if (ieq(key, "fwmark")) {
+        if (parse_int(val, &inst->fwmark)) die("config:%d: invalid fwmark", line_no);
+    } else if (ieq(key, "qdisc")) {
+        if (parse_bool(val, &inst->qdisc_enable)) die("config:%d: invalid qdisc value '%s'", line_no, val);
     } else {
         die("config:%d: unknown key '%s' in instance '%s'", line_no, key, inst->name);
     }
@@ -522,6 +530,12 @@ static void load_config(const char *path) {
         if (inst->guard_interval_override[0] &&
             !(ieq(inst->guard_interval_override, "short") || ieq(inst->guard_interval_override, "long"))) {
             die("instance '%s': guard_interval must be 'short' or 'long'", inst->name);
+        }
+        if (inst->fwmark >= 0 && inst->kind != INST_KIND_TX_LOCAL) {
+            die("instance '%s': fwmark is only valid for TX instances", inst->name);
+        }
+        if (inst->qdisc_enable && inst->kind != INST_KIND_TX_LOCAL) {
+            die("instance '%s': qdisc flag is only valid for TX instances", inst->name);
         }
         if (ieq(inst->type, "distributor")) {
             inst->distributor = 1;
@@ -897,6 +911,16 @@ static void build_wfb_command(const instance_t *inst,
                 add_arg(argv, argc, arg_storage[storage_idx]);
                 storage_idx++;
             }
+        }
+        if (!injector_mode && inst->fwmark >= 0) {
+            NEXT_SLOT();
+            snprintf(arg_storage[storage_idx], sizeof(arg_storage[storage_idx]), "%d", inst->fwmark);
+            add_arg(argv, argc, "-P");
+            add_arg(argv, argc, arg_storage[storage_idx]);
+            storage_idx++;
+        }
+        if (inst->qdisc_enable) {
+            add_arg(argv, argc, "-Q");
         }
 
         if (distributor_mode) {

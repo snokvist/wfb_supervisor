@@ -15,7 +15,7 @@ A tiny supervisor that parses `wfb.conf` and launches WFB helpers (`wfb_rx`, `wf
 ## Command synthesis at a glance
 - `aggregator` (rx): `wfb_rx -a <listen_port> [-K key] { -c <host> -u <port> | -U unix:/path } [-R rcv_buf] [-s snd_buf] [-l log] [-i linkid] [-p radio_port] <ifaces...>`
 - `forwarder` (rx): `wfb_rx -f -c <host> -u <port> [-i linkid] [-p radio_port] <ifaces...>`
-- `local/aggregator` (tx): `wfb_tx -K <key> -k <fec_k> -n <fec_n> -u <udp_port> [-C control] [-R rcv_buf] [-s snd_buf] [-l log] -F <fec_delay> -T <fec_timeout> -B <bandwidth> -G <guard_interval> -f <data|rts> -M <mcs> -S <stbc> -L <ldpc> [-i linkid] [-p radio_port] <iface>`
+- `local/aggregator` (tx): `wfb_tx -K <key> -k <fec_k> -n <fec_n> -u <udp_port> [-C control] [-R rcv_buf] [-s snd_buf] [-l log] -F <fec_delay> -T <fec_timeout> -B <bandwidth> -G <guard_interval> -f <data|rts> -M <mcs> -S <stbc> -L <ldpc> [-P fwmark] [-Q] [-i linkid] [-p radio_port] <iface>`
 - `distributor` (tx): `wfb_tx -d` plus TX opts, followed by `host:port1,port2,...` (output)
 - `injector` (tx): `wfb_tx -I <port> [-R rcv_buf] [-l log] <iface>`
 - `tunnel`: `wfb_tun -t <ifname> -a <cidr> -l <input_port> -u <output_port> -c <peer_address>`
@@ -29,6 +29,7 @@ A tiny supervisor that parses `wfb.conf` and launches WFB helpers (`wfb_rx`, `wf
 - `tunnel` instances now require `peer_address` (used for `wfb_tun -c`); `master_node` is no longer implied.
 - `frame_type` can be set per instance (or globally) to choose `-f data|rts` for TX modes (skipped for injectors).
 - `agg_timeout_ms` is supported for tunnels (including 0) and maps to `wfb_tun -T`.
+- `fwmark` can be set per TX instance to emit `-P <mark>` (useful with shaper). `qdisc=yes` adds `-Q` on TX.
 
 ## Parameters not yet implemented
 Tracking the flags we still need to plumb from config → command lines:
@@ -39,7 +40,7 @@ Tracking the flags we still need to plumb from config → command lines:
 
 - `wfb_tx`:
   - Timing: `-F fec_delay`, `-T fec_timeout`
-  - RF/modem: `-N VHT_NSS`, `-e epoch`, `-m` (mirror), `-V`, `-Q`, `-P fwmark`
+  - RF/modem: `-N VHT_NSS`, `-e epoch`, `-m` (mirror), `-V`
   - Transport variants: `-U unix_socket`
 
 - `wfb_tun`:
