@@ -306,16 +306,26 @@ static void expand_placeholders(const char *in, char *out, size_t out_len) {
     out[out_pos] = '\0';
 }
 
+static const char *wrap_exec(const char *cmd, char *buf, size_t buf_len) {
+    if (strncmp(cmd, "exec ", 5) == 0) return cmd;
+
+    int n = snprintf(buf, buf_len, "exec %s", cmd);
+    if (n < 0 || (size_t)n >= buf_len) die("expanded command too long");
+    return buf;
+}
+
 static void run_commands(char cmds[][MAX_VALUE_LEN], int count, const char *phase) {
     for (int i = 0; i < count; i++) {
         char expanded[MAX_CMD_LEN];
+        char exec_wrapped[MAX_CMD_LEN];
         expand_placeholders(cmds[i], expanded, sizeof(expanded));
-        fprintf(stderr, "forker: running %s command: %s\n", phase, expanded);
+        const char *cmd = wrap_exec(expanded, exec_wrapped, sizeof(exec_wrapped));
+        fprintf(stderr, "forker: running %s command: %s\n", phase, cmd);
         pid_t pid = fork();
         if (pid < 0) die("%s command fork failed: %s", phase, strerror(errno));
         if (pid == 0) {
-            execl("/bin/sh", "sh", "-c", expanded, (char *)NULL);
-            fprintf(stderr, "forker: exec failed for %s command '%s': %s\n", phase, expanded, strerror(errno));
+            execl("/bin/sh", "sh", "-c", cmd, (char *)NULL);
+            fprintf(stderr, "forker: exec failed for %s command '%s': %s\n", phase, cmd, strerror(errno));
             _exit(127);
         }
         int status;
@@ -331,7 +341,9 @@ static void run_commands(char cmds[][MAX_VALUE_LEN], int count, const char *phas
 
 static void build_command(const instance_t *inst, char **argv, int *argc, char *exec_path, size_t exec_len) {
     char expanded_cmd[MAX_CMD_LEN];
+    char exec_wrapped[MAX_CMD_LEN];
     expand_placeholders(inst->cmd, expanded_cmd, sizeof(expanded_cmd));
+    const char *cmd = wrap_exec(expanded_cmd, exec_wrapped, sizeof(exec_wrapped));
 
     if (inst->sse_enable) {
         snprintf(exec_path, exec_len, "%s", g_cfg.sse_tail);
@@ -354,14 +366,14 @@ static void build_command(const instance_t *inst, char **argv, int *argc, char *
         argv[(*argc)++] = "--";
         argv[(*argc)++] = "/bin/sh";
         argv[(*argc)++] = "-c";
-        argv[(*argc)++] = expanded_cmd;
+        argv[(*argc)++] = (char *)cmd;
         argv[*argc] = NULL;
     } else {
         snprintf(exec_path, exec_len, "%s", "/bin/sh");
         *argc = 0;
         argv[(*argc)++] = exec_path;
         argv[(*argc)++] = "-c";
-        argv[(*argc)++] = expanded_cmd;
+        argv[(*argc)++] = (char *)cmd;
         argv[*argc] = NULL;
     }
 }
