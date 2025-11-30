@@ -503,7 +503,7 @@ static int start_children(void) {
 }
 
 int main(int argc, char **argv) {
-    const char *config_path = "config/wfb.conf";
+    const char *config_path = "/etc/wfb.conf";
     if (argc > 1) config_path = argv[1];
 
     struct sigaction sa;
