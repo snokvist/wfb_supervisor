@@ -198,7 +198,7 @@ static instance_t *add_instance(const char *name, int line_no) {
     return inst;
 }
 
-static void parse_general_kv(int line_no, const char *key, const char *val) {
+static int parse_general_kv(int line_no, const char *key, const char *val) {
     if (strcasecmp(key, "sse_tail") == 0) {
         strncpy(g_cfg.sse_tail, val, sizeof(g_cfg.sse_tail)-1);
     } else if (strcasecmp(key, "sse_host") == 0) {
@@ -216,8 +216,10 @@ static void parse_general_kv(int line_no, const char *key, const char *val) {
         g_cfg.cleanup_cmds[g_cfg.cleanup_cmd_count][sizeof(g_cfg.cleanup_cmds[g_cfg.cleanup_cmd_count])-1] = '\0';
         g_cfg.cleanup_cmd_count++;
     } else {
-        store_extra_kv(line_no, key, val);
+        return 0;
     }
+
+    return 1;
 }
 
 static void parse_instance_kv(instance_t *inst, int line_no, const char *key, const char *val) {
@@ -289,8 +291,8 @@ static void load_config(const char *path) {
         if (*key == '\0') die("config:%d: empty key", line_no);
 
         if (section == SEC_GENERAL) {
-            if (!parse_parameter_kv(line_no, key, val)) {
-                parse_general_kv(line_no, key, val);
+            if (!parse_general_kv(line_no, key, val)) {
+                parse_parameter_kv(line_no, key, val);
             }
         } else if (section == SEC_PARAMETERS) {
             parse_parameter_kv(line_no, key, val);
