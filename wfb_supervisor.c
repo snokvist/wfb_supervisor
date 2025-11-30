@@ -177,6 +177,8 @@ static int parse_parameter_kv(int line_no, const char *key, const char *val) {
         strncpy(g_cfg.key_file, val, sizeof(g_cfg.key_file)-1);
     } else if (strcasecmp(key, "log_interval") == 0) {
         if (parse_int(val, &g_cfg.log_interval)) die("config:%d: invalid log_interval", line_no);
+    } else if (strcasecmp(key, "init_cmd") == 0 || strcasecmp(key, "cleanup_cmd") == 0) {
+        die("config:%d: %s must be placed in [general]", line_no, key);
     } else {
         store_extra_kv(line_no, key, val);
         return 0;
