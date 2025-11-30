@@ -1,7 +1,7 @@
 # Project Review
 
 ## Overview
-The codebase provides a small supervisor (`forker.c`) that parses INI-like configuration files, expands placeholders, runs init hooks, launches multiple child processes (optionally wrapped by `sse_tail`), and tears everything down when any child exits or on termination signals. It currently builds the `wfb_supervisor` binary.
+The codebase provides a small supervisor (`wfb_supervisor.c`) that parses INI-like configuration files, expands placeholders, runs init hooks, launches multiple child processes (optionally wrapped by `sse_tail`), and tears everything down when any child exits or on termination signals. It currently builds the `wfb_supervisor` binary.
 
 ## Suggested Improvements
 1. **Add shutdown escalation for stubborn children.** `shutdown_all` sends `SIGTERM` to running children and then blocks on `waitpid` without ever escalating to `SIGKILL`. If a child refuses to exit, the supervisor will hang indefinitely and skip cleanup hooks. Adding a timed second pass that escalates to `SIGKILL` after a grace period would prevent shutdown deadlocks and guarantee cleanup runs.

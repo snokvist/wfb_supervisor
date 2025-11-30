@@ -13,7 +13,7 @@ TX_CONFIG_SRC := configs/tx-wfb.conf
 SUPERVISOR_CONF ?= /etc/wfb_supervisor.conf
 SUPERVISOR_WORKDIR ?= /etc
 BIN := wfb_supervisor
-SRC := forker.c
+SRC := wfb_supervisor.c
 
 .PHONY: all clean rebuild run install uninstall
 

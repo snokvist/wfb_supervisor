@@ -1,4 +1,4 @@
-//gcc -O2 -std=c11 -Wall -Wextra -o wfb_supervisor forker.c
+//gcc -O2 -std=c11 -Wall -Wextra -o wfb_supervisor wfb_supervisor.c
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
