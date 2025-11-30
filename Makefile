@@ -8,7 +8,7 @@ SERVICE_SRC := scripts/wfb_supervisor.service
 SERVICE_PATH := $(SYSDDIR)/wfb_supervisor.service
 MONITOR_SCRIPT := scripts/monitor.sh
 SHAPER_SCRIPT := scripts/shaper.sh
-CONFIG_SRC := wfb.conf
+CONFIG_SRC := config/wfb.conf
 TX_CONFIG_SRC := configs/tx-wfb.conf
 SUPERVISOR_CONF ?= /etc/wfb_supervisor.conf
 SUPERVISOR_WORKDIR ?= /etc
@@ -29,7 +29,7 @@ clean:
 
 # Convenience: rebuild then run against the sample config.
 run: $(BIN)
-	./$(BIN) wfb.conf
+	./$(BIN) $(CONFIG_SRC)
 
 # Cross-compilation helper for linux-arm targets.
 arm: CC := $(ARM_CC)

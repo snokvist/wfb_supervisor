@@ -1,10 +1,10 @@
 # wfb_supervisor
 
-A tiny supervisor that reads explicit command lines from `wfb.conf` and launches them (optionally wrapped by `sse_tail`). It runs init hooks, starts every instance, logs the exact command line, and tears everything down if any child exits or on SIGINT/SIGTERM, then runs cleanup hooks.
+A tiny supervisor that reads explicit command lines from `config/wfb.conf` and launches them (optionally wrapped by `sse_tail`). It runs init hooks, starts every instance, logs the exact command line, and tears everything down if any child exits or on SIGINT/SIGTERM, then runs cleanup hooks.
 
 ## Building and running
 - `make` (or `make rebuild`) builds `wfb_supervisor` with `gcc -O2 -std=c11 -Wall -Wextra`
-- `./wfb_supervisor` (or `./wfb_supervisor wfb.conf`) runs against the sample config in the repo
+- `./wfb_supervisor` (or `./wfb_supervisor config/wfb.conf`) runs against the sample config in the repo
 - `./wfb_supervisor /path/to/custom.conf` uses an alternate config
 
 ## Signals
@@ -17,5 +17,5 @@ A tiny supervisor that reads explicit command lines from `wfb.conf` and launches
 There is no derived flag handling—encode everything you need directly in `cmd=`.
 
 ## Samples
-- `wfb.conf` shows a multi-instance setup with init/cleanup hooks and mixed SSE/non-SSE instances.
+- `config/wfb.conf` shows a multi-instance setup with init/cleanup hooks and mixed SSE/non-SSE instances.
 - `configs/tx-wfb.conf` is a minimal TX-focused sample.
