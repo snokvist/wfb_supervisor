@@ -9,7 +9,6 @@ SERVICE_PATH := $(SYSDDIR)/wfb_supervisor.service
 MONITOR_SCRIPT := scripts/monitor.sh
 SHAPER_SCRIPT := scripts/shaper.sh
 CONFIG_SRC := config/wfb.conf
-TX_CONFIG_SRC := configs/tx-wfb.conf
 SUPERVISOR_CONF ?= /etc/wfb.conf
 SUPERVISOR_WORKDIR ?= /etc
 BIN := wfb_supervisor
@@ -35,21 +34,20 @@ run: $(BIN)
 arm: CC := $(ARM_CC)
 arm: all
 
-install: $(BIN) $(SERVICE_SRC) $(MONITOR_SCRIPT) $(SHAPER_SCRIPT) $(CONFIG_SRC) $(TX_CONFIG_SRC)
+install: $(BIN) $(SERVICE_SRC) $(MONITOR_SCRIPT) $(SHAPER_SCRIPT) $(CONFIG_SRC)
 	install -d $(BINDIR) $(SYSDDIR) $(dir $(SUPERVISOR_CONF)) $(SUPERVISOR_WORKDIR)
 	install -m 0755 $(BIN) $(BINDIR)/
 	install -m 0755 $(MONITOR_SCRIPT) $(BINDIR)/monitor.sh
 	install -m 0755 $(SHAPER_SCRIPT) $(BINDIR)/shaper.sh
 	install -m 0644 $(CONFIG_SRC) $(SUPERVISOR_CONF)
-	install -m 0644 $(TX_CONFIG_SRC) $(SUPERVISOR_WORKDIR)/tx-wfb.conf
 	sed -e 's|@WFB_SUPERVISOR_BIN@|$(BINDIR)/$(BIN)|g' \
-    -e 's|@WFB_SUPERVISOR_CONF@|$(SUPERVISOR_CONF)|g' \
-    -e 's|@VRX_DIR@|$(SUPERVISOR_WORKDIR)|g' \
-$(SERVICE_SRC) > $(SERVICE_PATH)
+	    -e 's|@WFB_SUPERVISOR_CONF@|$(SUPERVISOR_CONF)|g' \
+	    -e 's|@VRX_DIR@|$(SUPERVISOR_WORKDIR)|g' \
+	$(SERVICE_SRC) > $(SERVICE_PATH)
 	systemctl daemon-reload
 
 uninstall:
 	rm -f $(BINDIR)/$(BIN) $(BINDIR)/monitor.sh $(BINDIR)/shaper.sh
-	rm -f $(SUPERVISOR_CONF) $(SUPERVISOR_WORKDIR)/tx-wfb.conf
+	rm -f $(SUPERVISOR_CONF)
 	rm -f $(SERVICE_PATH)
 	systemctl daemon-reload

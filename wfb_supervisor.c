@@ -123,18 +123,7 @@ static void init_defaults(void) {
     g_cfg.log_interval = 0;
 }
 
-static instance_t *add_instance(const char *name, int line_no) {
-    if (g_instance_count >= MAX_INSTANCES) {
-        die("config:%d: too many instances (max %d)", line_no, MAX_INSTANCES);
-    }
-    instance_t *inst = &g_instances[g_instance_count++];
-    memset(inst, 0, sizeof(*inst));
-    strncpy(inst->name, name, sizeof(inst->name)-1);
-    inst->sse_port = 0;
-    return inst;
-}
-
-static void parse_general_kv(int line_no, const char *key, const char *val) {
+static void store_extra_kv(int line_no, const char *key, const char *val) {
     for (int i = 0; i < g_cfg.extra_count; i++) {
         if (strcasecmp(g_cfg.extra_keys[i], key) == 0) {
             strncpy(g_cfg.extra_vals[i], val, sizeof(g_cfg.extra_vals[i]) - 1);
@@ -143,23 +132,34 @@ static void parse_general_kv(int line_no, const char *key, const char *val) {
         }
     }
 
-    if (strcasecmp(key, "sse_tail") == 0) {
-        strncpy(g_cfg.sse_tail, val, sizeof(g_cfg.sse_tail)-1);
-    } else if (strcasecmp(key, "sse_host") == 0) {
-        strncpy(g_cfg.sse_host, val, sizeof(g_cfg.sse_host)-1);
-    } else if (strcasecmp(key, "sse_base_port") == 0) {
-        if (parse_int(val, &g_cfg.sse_base_port)) die("config:%d: invalid sse_base_port", line_no);
-    } else if (strcasecmp(key, "init_cmd") == 0) {
-        if (g_cfg.init_cmd_count >= MAX_CMDS) die("config:%d: too many init_cmd entries (max %d)", line_no, MAX_CMDS);
-        strncpy(g_cfg.init_cmds[g_cfg.init_cmd_count], val, sizeof(g_cfg.init_cmds[g_cfg.init_cmd_count])-1);
-        g_cfg.init_cmds[g_cfg.init_cmd_count][sizeof(g_cfg.init_cmds[g_cfg.init_cmd_count])-1] = '\0';
-        g_cfg.init_cmd_count++;
-    } else if (strcasecmp(key, "cleanup_cmd") == 0) {
-        if (g_cfg.cleanup_cmd_count >= MAX_CMDS) die("config:%d: too many cleanup_cmd entries (max %d)", line_no, MAX_CMDS);
-        strncpy(g_cfg.cleanup_cmds[g_cfg.cleanup_cmd_count], val, sizeof(g_cfg.cleanup_cmds[g_cfg.cleanup_cmd_count])-1);
-        g_cfg.cleanup_cmds[g_cfg.cleanup_cmd_count][sizeof(g_cfg.cleanup_cmds[g_cfg.cleanup_cmd_count])-1] = '\0';
-        g_cfg.cleanup_cmd_count++;
-    } else if (strcasecmp(key, "rx_nics") == 0) {
+    if (g_cfg.extra_count >= MAX_EXTRA_GENERAL) {
+        die("config:%d: too many general/parameter entries (max %d)", line_no, MAX_EXTRA_GENERAL);
+    }
+
+    strncpy(g_cfg.extra_keys[g_cfg.extra_count], key, sizeof(g_cfg.extra_keys[0]) - 1);
+    g_cfg.extra_keys[g_cfg.extra_count][sizeof(g_cfg.extra_keys[0]) - 1] = '\0';
+
+    char placeholder[MAX_KEY_LEN + 2];
+    int n = snprintf(placeholder, sizeof(placeholder), "$%s",
+                     g_cfg.extra_keys[g_cfg.extra_count]);
+    if (n < 0 || (size_t)n >= sizeof(placeholder)) {
+        die("config:%d: general key '%s' too long to substitute", line_no, key);
+    }
+
+    size_t placeholder_len = strlen(placeholder);
+    if (placeholder_len >= sizeof(g_cfg.extra_placeholders[0])) {
+        die("config:%d: general key '%s' too long to substitute", line_no, key);
+    }
+    memcpy(g_cfg.extra_placeholders[g_cfg.extra_count], placeholder, placeholder_len + 1);
+
+    strncpy(g_cfg.extra_vals[g_cfg.extra_count], val, sizeof(g_cfg.extra_vals[0]) - 1);
+    g_cfg.extra_vals[g_cfg.extra_count][sizeof(g_cfg.extra_vals[0]) - 1] = '\0';
+
+    g_cfg.extra_count++;
+}
+
+static int parse_parameter_kv(int line_no, const char *key, const char *val) {
+    if (strcasecmp(key, "rx_nics") == 0) {
         strncpy(g_cfg.rx_nics, val, sizeof(g_cfg.rx_nics)-1);
     } else if (strcasecmp(key, "tx_nics") == 0) {
         strncpy(g_cfg.tx_nics, val, sizeof(g_cfg.tx_nics)-1);
@@ -177,32 +177,49 @@ static void parse_general_kv(int line_no, const char *key, const char *val) {
         strncpy(g_cfg.key_file, val, sizeof(g_cfg.key_file)-1);
     } else if (strcasecmp(key, "log_interval") == 0) {
         if (parse_int(val, &g_cfg.log_interval)) die("config:%d: invalid log_interval", line_no);
+    } else if (strcasecmp(key, "init_cmd") == 0 || strcasecmp(key, "cleanup_cmd") == 0) {
+        die("config:%d: %s must be placed in [general]", line_no, key);
     } else {
-        if (g_cfg.extra_count >= MAX_EXTRA_GENERAL) {
-            die("config:%d: too many general entries (max %d)", line_no, MAX_EXTRA_GENERAL);
-        }
-
-        strncpy(g_cfg.extra_keys[g_cfg.extra_count], key, sizeof(g_cfg.extra_keys[0]) - 1);
-        g_cfg.extra_keys[g_cfg.extra_count][sizeof(g_cfg.extra_keys[0]) - 1] = '\0';
-
-        char placeholder[MAX_KEY_LEN + 2];
-        int n = snprintf(placeholder, sizeof(placeholder), "$%s",
-                         g_cfg.extra_keys[g_cfg.extra_count]);
-        if (n < 0 || (size_t)n >= sizeof(placeholder)) {
-            die("config:%d: general key '%s' too long to substitute", line_no, key);
-        }
-
-        size_t placeholder_len = strlen(placeholder);
-        if (placeholder_len >= sizeof(g_cfg.extra_placeholders[0])) {
-            die("config:%d: general key '%s' too long to substitute", line_no, key);
-        }
-        memcpy(g_cfg.extra_placeholders[g_cfg.extra_count], placeholder, placeholder_len + 1);
-
-        strncpy(g_cfg.extra_vals[g_cfg.extra_count], val, sizeof(g_cfg.extra_vals[0]) - 1);
-        g_cfg.extra_vals[g_cfg.extra_count][sizeof(g_cfg.extra_vals[0]) - 1] = '\0';
-
-        g_cfg.extra_count++;
+        store_extra_kv(line_no, key, val);
+        return 0;
     }
+
+    return 1;
+}
+
+static instance_t *add_instance(const char *name, int line_no) {
+    if (g_instance_count >= MAX_INSTANCES) {
+        die("config:%d: too many instances (max %d)", line_no, MAX_INSTANCES);
+    }
+    instance_t *inst = &g_instances[g_instance_count++];
+    memset(inst, 0, sizeof(*inst));
+    strncpy(inst->name, name, sizeof(inst->name)-1);
+    inst->sse_port = 0;
+    return inst;
+}
+
+static int parse_general_kv(int line_no, const char *key, const char *val) {
+    if (strcasecmp(key, "sse_tail") == 0) {
+        strncpy(g_cfg.sse_tail, val, sizeof(g_cfg.sse_tail)-1);
+    } else if (strcasecmp(key, "sse_host") == 0) {
+        strncpy(g_cfg.sse_host, val, sizeof(g_cfg.sse_host)-1);
+    } else if (strcasecmp(key, "sse_base_port") == 0) {
+        if (parse_int(val, &g_cfg.sse_base_port)) die("config:%d: invalid sse_base_port", line_no);
+    } else if (strcasecmp(key, "init_cmd") == 0) {
+        if (g_cfg.init_cmd_count >= MAX_CMDS) die("config:%d: too many init_cmd entries (max %d)", line_no, MAX_CMDS);
+        strncpy(g_cfg.init_cmds[g_cfg.init_cmd_count], val, sizeof(g_cfg.init_cmds[g_cfg.init_cmd_count])-1);
+        g_cfg.init_cmds[g_cfg.init_cmd_count][sizeof(g_cfg.init_cmds[g_cfg.init_cmd_count])-1] = '\0';
+        g_cfg.init_cmd_count++;
+    } else if (strcasecmp(key, "cleanup_cmd") == 0) {
+        if (g_cfg.cleanup_cmd_count >= MAX_CMDS) die("config:%d: too many cleanup_cmd entries (max %d)", line_no, MAX_CMDS);
+        strncpy(g_cfg.cleanup_cmds[g_cfg.cleanup_cmd_count], val, sizeof(g_cfg.cleanup_cmds[g_cfg.cleanup_cmd_count])-1);
+        g_cfg.cleanup_cmds[g_cfg.cleanup_cmd_count][sizeof(g_cfg.cleanup_cmds[g_cfg.cleanup_cmd_count])-1] = '\0';
+        g_cfg.cleanup_cmd_count++;
+    } else {
+        return 0;
+    }
+
+    return 1;
 }
 
 static void parse_instance_kv(instance_t *inst, int line_no, const char *key, const char *val) {
@@ -231,7 +248,7 @@ static void load_config(const char *path) {
 
     char linebuf[512];
     int line_no = 0;
-    enum { SEC_NONE, SEC_GENERAL, SEC_INSTANCE } section = SEC_NONE;
+    enum { SEC_NONE, SEC_GENERAL, SEC_PARAMETERS, SEC_INSTANCE } section = SEC_NONE;
     instance_t *current_inst = NULL;
 
     while (fgets(linebuf, sizeof(linebuf), f)) {
@@ -250,6 +267,9 @@ static void load_config(const char *path) {
             char *secname = trim(line + 1);
             if (strcasecmp(secname, "general") == 0) {
                 section = SEC_GENERAL;
+                current_inst = NULL;
+            } else if (strcasecmp(secname, "parameters") == 0) {
+                section = SEC_PARAMETERS;
                 current_inst = NULL;
             } else if (strncasecmp(secname, "instance", 8) == 0) {
                 char *p = secname + 8;
@@ -271,7 +291,11 @@ static void load_config(const char *path) {
         if (*key == '\0') die("config:%d: empty key", line_no);
 
         if (section == SEC_GENERAL) {
-            parse_general_kv(line_no, key, val);
+            if (!parse_general_kv(line_no, key, val)) {
+                parse_parameter_kv(line_no, key, val);
+            }
+        } else if (section == SEC_PARAMETERS) {
+            parse_parameter_kv(line_no, key, val);
         } else if (section == SEC_INSTANCE) {
             if (!current_inst) die("config:%d: internal error: no current instance", line_no);
             parse_instance_kv(current_inst, line_no, key, val);
