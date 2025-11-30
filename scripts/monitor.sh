@@ -8,9 +8,40 @@
 #   Restore one or more interfaces back to managed mode:
 #       ./monitor.sh restore <iface> [iface...]
 
-CHANNEL="161"
-BANDWIDTH="HT20"
-TXPOWER="500"
+CONFIG_FILE="/etc/wfb.conf"
+
+CHANNEL_DEFAULT="161"
+BANDWIDTH_DEFAULT="HT20"
+TXPOWER_DEFAULT="500"
+REGION_DEFAULT="US"
+
+# Load simple VAR=VALUE overrides from /etc/wfb.conf when present
+
+ENV_CHANNEL="${CHANNEL:-}"
+ENV_BANDWIDTH="${BANDWIDTH:-}"
+ENV_TXPOWER="${TXPOWER:-}"
+ENV_REGION="${REGION:-}"
+
+if [ -r "$CONFIG_FILE" ]; then
+    while IFS= read -r line; do
+        case "$line" in
+            [A-Za-z_]*=*)
+                key=${line%%=*}
+                value=${line#*=}
+                case "$key" in
+                    CHANNEL|BANDWIDTH|TXPOWER|REGION)
+                        eval "$key=\"${value}\""
+                        ;;
+                esac
+                ;;
+        esac
+    done < "$CONFIG_FILE"
+fi
+
+CHANNEL="${ENV_CHANNEL:-${CHANNEL:-$CHANNEL_DEFAULT}}"
+BANDWIDTH="${ENV_BANDWIDTH:-${BANDWIDTH:-$BANDWIDTH_DEFAULT}}"
+TXPOWER="${ENV_TXPOWER:-${TXPOWER:-$TXPOWER_DEFAULT}}"
+REGION="${ENV_REGION:-${REGION:-$REGION_DEFAULT}}"
 
 usage() {
     echo "Usage:"
@@ -25,6 +56,11 @@ fi
 
 MODE="$1"
 shift
+
+# Set regulatory domain early
+if ! iw reg set "$REGION"; then
+    echo "Warning: failed to set regulatory region to $REGION"
+fi
 
 set -e
 

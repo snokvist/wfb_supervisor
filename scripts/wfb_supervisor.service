@@ -1,11 +1,11 @@
 [Unit]
-Description=forker control daemon
+Description=wfb_supervisor control daemon
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=@FORKER_BIN@ @FORKER_CONF@
+ExecStart=@WFB_SUPERVISOR_BIN@ @WFB_SUPERVISOR_CONF@
 WorkingDirectory=@VRX_DIR@
 User=root
 Group=root

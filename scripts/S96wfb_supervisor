@@ -1,8 +1,8 @@
 #!/bin/sh
-# Simple control script for forker (no start-stop-daemon, no PID files)
+# Simple control script for wfb_supervisor (no start-stop-daemon, no PID files)
 
-DAEMON="forker"
-DAEMON_ARGS="/etc/forker.conf"
+DAEMON="wfb_supervisor"
+DAEMON_ARGS="/etc/wfb_supervisor.conf"
 
 # Try to find PIDs using pidof, fall back to pgrep
 get_pids() {
