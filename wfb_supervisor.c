@@ -15,10 +15,12 @@
 
 #define MAX_INSTANCES 16
 #define MAX_NAME_LEN  64
+#define MAX_KEY_LEN   64
 #define MAX_VALUE_LEN 256
 #define MAX_CMD_LEN   1024
 #define MAX_ARGS      64
 #define MAX_CMDS      8
+#define MAX_EXTRA_GENERAL 32
 
 typedef struct {
     char sse_tail[MAX_VALUE_LEN];
@@ -39,6 +41,11 @@ typedef struct {
     int  init_cmd_count;
     char cleanup_cmds[MAX_CMDS][MAX_VALUE_LEN];
     int  cleanup_cmd_count;
+
+    char extra_keys[MAX_EXTRA_GENERAL][MAX_KEY_LEN];
+    char extra_placeholders[MAX_EXTRA_GENERAL][MAX_KEY_LEN + 2];
+    char extra_vals[MAX_EXTRA_GENERAL][MAX_VALUE_LEN];
+    int  extra_count;
 } general_config_t;
 
 typedef struct {
@@ -128,6 +135,14 @@ static instance_t *add_instance(const char *name, int line_no) {
 }
 
 static void parse_general_kv(int line_no, const char *key, const char *val) {
+    for (int i = 0; i < g_cfg.extra_count; i++) {
+        if (strcasecmp(g_cfg.extra_keys[i], key) == 0) {
+            strncpy(g_cfg.extra_vals[i], val, sizeof(g_cfg.extra_vals[i]) - 1);
+            g_cfg.extra_vals[i][sizeof(g_cfg.extra_vals[i]) - 1] = '\0';
+            return;
+        }
+    }
+
     if (strcasecmp(key, "sse_tail") == 0) {
         strncpy(g_cfg.sse_tail, val, sizeof(g_cfg.sse_tail)-1);
     } else if (strcasecmp(key, "sse_host") == 0) {
@@ -167,7 +182,30 @@ static void parse_general_kv(int line_no, const char *key, const char *val) {
                strcasecmp(key, "wfb_bw_mhz") == 0) {
         /* Optional radio/shaping hints used by helper scripts; accepted for compatibility. */
     } else {
-        die("config:%d: unknown general key '%s'", line_no, key);
+        if (g_cfg.extra_count >= MAX_EXTRA_GENERAL) {
+            die("config:%d: too many general entries (max %d)", line_no, MAX_EXTRA_GENERAL);
+        }
+
+        strncpy(g_cfg.extra_keys[g_cfg.extra_count], key, sizeof(g_cfg.extra_keys[0]) - 1);
+        g_cfg.extra_keys[g_cfg.extra_count][sizeof(g_cfg.extra_keys[0]) - 1] = '\0';
+
+        char placeholder[MAX_KEY_LEN + 2];
+        int n = snprintf(placeholder, sizeof(placeholder), "$%s",
+                         g_cfg.extra_keys[g_cfg.extra_count]);
+        if (n < 0 || (size_t)n >= sizeof(placeholder)) {
+            die("config:%d: general key '%s' too long to substitute", line_no, key);
+        }
+
+        size_t placeholder_len = strlen(placeholder);
+        if (placeholder_len >= sizeof(g_cfg.extra_placeholders[0])) {
+            die("config:%d: general key '%s' too long to substitute", line_no, key);
+        }
+        memcpy(g_cfg.extra_placeholders[g_cfg.extra_count], placeholder, placeholder_len + 1);
+
+        strncpy(g_cfg.extra_vals[g_cfg.extra_count], val, sizeof(g_cfg.extra_vals[0]) - 1);
+        g_cfg.extra_vals[g_cfg.extra_count][sizeof(g_cfg.extra_vals[0]) - 1] = '\0';
+
+        g_cfg.extra_count++;
     }
 }
 
@@ -273,25 +311,36 @@ static void expand_placeholders(const char *in, char *out, size_t out_len) {
     snprintf(stbc_buf, sizeof(stbc_buf), "%d", g_cfg.stbc);
     snprintf(log_buf, sizeof(log_buf), "%d", g_cfg.log_interval);
 
-    struct kv { const char *key; const char *val; } table[] = {
-        {"$rx_nics", g_cfg.rx_nics},
-        {"$tx_nics", g_cfg.tx_nics},
-        {"$master_node", g_cfg.master_node},
-        {"$link_id", g_cfg.link_id},
-        {"$mcs", mcs_buf},
-        {"$ldpc", ldpc_buf},
-        {"$stbc", stbc_buf},
-        {"$key_file", g_cfg.key_file},
-        {"$log_interval", log_buf},
-    };
+    struct kv { const char *key; const char *val; int ci; } table[9 + MAX_EXTRA_GENERAL];
+    size_t tcount = 0;
+
+    table[tcount++] = (struct kv){"$rx_nics", g_cfg.rx_nics, 0};
+    table[tcount++] = (struct kv){"$tx_nics", g_cfg.tx_nics, 0};
+    table[tcount++] = (struct kv){"$master_node", g_cfg.master_node, 0};
+    table[tcount++] = (struct kv){"$link_id", g_cfg.link_id, 0};
+    table[tcount++] = (struct kv){"$mcs", mcs_buf, 0};
+    table[tcount++] = (struct kv){"$ldpc", ldpc_buf, 0};
+    table[tcount++] = (struct kv){"$stbc", stbc_buf, 0};
+    table[tcount++] = (struct kv){"$key_file", g_cfg.key_file, 0};
+    table[tcount++] = (struct kv){"$log_interval", log_buf, 0};
+
+    for (int i = 0; i < g_cfg.extra_count; i++) {
+        table[tcount++] = (struct kv){g_cfg.extra_placeholders[i], g_cfg.extra_vals[i], 1};
+    }
     size_t pos = 0;
     size_t out_pos = 0;
     size_t in_len = strlen(in);
     while (pos < in_len) {
         int matched = 0;
-        for (size_t i = 0; i < sizeof(table)/sizeof(table[0]); i++) {
+        for (size_t i = 0; i < tcount; i++) {
             size_t klen = strlen(table[i].key);
-            if (klen > 0 && strncmp(in + pos, table[i].key, klen) == 0) {
+            if (klen == 0) continue;
+
+            int key_match = table[i].ci ?
+                (strncasecmp(in + pos, table[i].key, klen) == 0) :
+                (strncmp(in + pos, table[i].key, klen) == 0);
+
+            if (key_match) {
                 size_t vlen = strlen(table[i].val);
                 if (out_pos + vlen >= out_len) die("expanded command too long");
                 memcpy(out + out_pos, table[i].val, vlen);
