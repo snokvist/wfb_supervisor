@@ -11,18 +11,18 @@
 CONFIG_FILE="/etc/wfb.conf"
 
 CHANNEL_DEFAULT="161"
-BANDWIDTH_MHZ_DEFAULT="20"
+BANDWIDTH_DEFAULT_MHZ="20"
 TXPOWER_DEFAULT="500"
 REGION_DEFAULT="US"
 
 # Load simple VAR=VALUE overrides from /etc/wfb.conf when present
 
 ENV_CHANNEL="${CHANNEL:-}"
-ENV_BANDWIDTH_MHZ="${BANDWIDTH_MHZ:-${WFB_BW_MHZ:-${BANDWIDTH:-}}}"
+ENV_BANDWIDTH="${BANDWIDTH:-}"
 ENV_TXPOWER="${TXPOWER:-}"
 ENV_REGION="${REGION:-}"
 
-CONFIG_BANDWIDTH_MHZ=""
+CONFIG_BANDWIDTH=""
 
 if [ -r "$CONFIG_FILE" ]; then
     while IFS= read -r line; do
@@ -34,8 +34,8 @@ if [ -r "$CONFIG_FILE" ]; then
                     CHANNEL|TXPOWER|REGION)
                         eval "$key=\"${value}\""
                         ;;
-                    BANDWIDTH|BANDWIDTH_MHZ|BW_MHZ|WFB_BW_MHZ|wfb_bw_mhz|bw_mhz)
-                        CONFIG_BANDWIDTH_MHZ="$value"
+                    BANDWIDTH)
+                        CONFIG_BANDWIDTH="$value"
                         ;;
                 esac
                 ;;
@@ -59,7 +59,7 @@ normalize_bandwidth_mhz() {
 
     case "$raw" in
         *[!0-9]*|'')
-            echo "$BANDWIDTH_MHZ_DEFAULT"
+            echo "$BANDWIDTH_DEFAULT_MHZ"
             ;;
         *)
             echo "$raw"
@@ -67,7 +67,7 @@ normalize_bandwidth_mhz() {
     esac
 }
 
-BANDWIDTH_MHZ_RAW="${ENV_BANDWIDTH_MHZ:-${BANDWIDTH_MHZ:-${CONFIG_BANDWIDTH_MHZ:-$BANDWIDTH_MHZ_DEFAULT}}}"
+BANDWIDTH_MHZ_RAW="${ENV_BANDWIDTH:-${CONFIG_BANDWIDTH:-$BANDWIDTH_DEFAULT_MHZ}}"
 BANDWIDTH_MHZ="$(normalize_bandwidth_mhz "$BANDWIDTH_MHZ_RAW")"
 MONITOR_BANDWIDTH="HT${BANDWIDTH_MHZ}"
 

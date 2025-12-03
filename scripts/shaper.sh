@@ -47,7 +47,7 @@ if [ -r "$CONFIG_FILE" ]; then
                     MCS|mcs)
                         CONFIG_MCS="$value"
                         ;;
-                    WFB_BW_MHZ|wfb_bw_mhz|BW_MHZ|bw_mhz|BANDWIDTH|bandwidth)
+                    BANDWIDTH)
                         CONFIG_BW_MHZ="$value"
                         ;;
                 esac
