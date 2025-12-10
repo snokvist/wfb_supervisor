@@ -1,9 +1,9 @@
 # Project Review
 
 ## Overview
-The codebase provides a small supervisor (`wfb_supervisor.c`) that parses INI-like configuration files, expands placeholders, runs init hooks, launches multiple child processes (optionally wrapped by `sse_tail`), and tears everything down when any child exits or on termination signals. It currently builds the `wfb_supervisor` binary.
+The codebase provides a small supervisor (`wfb_supervisor.c`) that parses INI-like configuration files, expands placeholders, runs init hooks, launches multiple child processes, and tears everything down when any child exits or on termination signals. It currently builds the `wfb_supervisor` binary and can optionally restart after cleanup with a configurable delay.
 
 ## Suggested Improvements
-1. **Add shutdown escalation for stubborn children.** `shutdown_all` sends `SIGTERM` to running children and then blocks on `waitpid` without ever escalating to `SIGKILL`. If a child refuses to exit, the supervisor will hang indefinitely and skip cleanup hooks. Adding a timed second pass that escalates to `SIGKILL` after a grace period would prevent shutdown deadlocks and guarantee cleanup runs.
-2. **Handle `fork` failures after partial startup.** `start_children` calls `die` immediately when a `fork` fails, which exits the supervisor without signalling any instances that were already started. That can leave orphaned children and skip cleanup hooks. Tracking how many processes have been spawned and reusing the existing `shutdown_all` path on errors would allow a clean rollback when one spawn fails.
-3. **Detect duplicate instance names in config parsing.** The config loader accepts multiple `[instance <name>]` sections with the same name and treats them as distinct entries. This makes logs and SSE naming ambiguous, and auto-assigned SSE ports are consumed even if the logical instance name repeats. Recording names as they are added and rejecting duplicates would make misconfigured files fail fast.
+1. **Handle `fork` failures after partial startup.** Addressed: startup now records the failing instance, triggers the standard shutdown path, and allows cleanup hooks to run so partially launched children are torn down cleanly.
+2. **Detect duplicate instance names in config parsing.** Addressed: config parsing rejects repeated `[instance <name>]` sections (case-insensitive), preventing ambiguous logs.
+3. **Expose restart limits.** The restart loop currently runs indefinitely when enabled. Adding a max-attempts counter or a backoff strategy would help avoid tight restart loops in the face of persistent misconfiguration.

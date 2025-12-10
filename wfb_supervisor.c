@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <ctype.h>
 #include <stdarg.h>
 #include <errno.h>
@@ -23,10 +24,6 @@
 #define MAX_EXTRA_GENERAL 32
 
 typedef struct {
-    char sse_tail[MAX_VALUE_LEN];
-    char sse_host[MAX_VALUE_LEN];
-    int  sse_base_port;
-
     char rx_nics[MAX_VALUE_LEN];
     char tx_nics[MAX_VALUE_LEN];
     char master_node[MAX_VALUE_LEN];
@@ -51,10 +48,7 @@ typedef struct {
 typedef struct {
     char name[MAX_NAME_LEN];
     char cmd[MAX_VALUE_LEN];
-    int  sse_enable;
-    int  sse_port;       // 0 = auto
-    char sse_name[MAX_VALUE_LEN];
-    int  quiet;          // suppress stdout/stderr when not using SSE
+    int  quiet;          // suppress stdout/stderr
 
     pid_t pid;
     int   exit_status;
@@ -110,8 +104,6 @@ static int parse_int(const char *v, int *out) {
 
 static void init_defaults(void) {
     memset(&g_cfg, 0, sizeof(g_cfg));
-    g_cfg.sse_base_port = 18080;
-    strcpy(g_cfg.sse_host, "0.0.0.0");
     strcpy(g_cfg.rx_nics, "");
     strcpy(g_cfg.tx_nics, "");
     strcpy(g_cfg.master_node, "");
@@ -191,21 +183,21 @@ static instance_t *add_instance(const char *name, int line_no) {
     if (g_instance_count >= MAX_INSTANCES) {
         die("config:%d: too many instances (max %d)", line_no, MAX_INSTANCES);
     }
+
+    for (int i = 0; i < g_instance_count; i++) {
+        if (strcasecmp(g_instances[i].name, name) == 0) {
+            die("config:%d: duplicate instance name '%s'", line_no, name);
+        }
+    }
+
     instance_t *inst = &g_instances[g_instance_count++];
     memset(inst, 0, sizeof(*inst));
     strncpy(inst->name, name, sizeof(inst->name)-1);
-    inst->sse_port = 0;
     return inst;
 }
 
 static int parse_general_kv(int line_no, const char *key, const char *val) {
-    if (strcasecmp(key, "sse_tail") == 0) {
-        strncpy(g_cfg.sse_tail, val, sizeof(g_cfg.sse_tail)-1);
-    } else if (strcasecmp(key, "sse_host") == 0) {
-        strncpy(g_cfg.sse_host, val, sizeof(g_cfg.sse_host)-1);
-    } else if (strcasecmp(key, "sse_base_port") == 0) {
-        if (parse_int(val, &g_cfg.sse_base_port)) die("config:%d: invalid sse_base_port", line_no);
-    } else if (strcasecmp(key, "init_cmd") == 0) {
+    if (strcasecmp(key, "init_cmd") == 0) {
         if (g_cfg.init_cmd_count >= MAX_CMDS) die("config:%d: too many init_cmd entries (max %d)", line_no, MAX_CMDS);
         strncpy(g_cfg.init_cmds[g_cfg.init_cmd_count], val, sizeof(g_cfg.init_cmds[g_cfg.init_cmd_count])-1);
         g_cfg.init_cmds[g_cfg.init_cmd_count][sizeof(g_cfg.init_cmds[g_cfg.init_cmd_count])-1] = '\0';
@@ -225,12 +217,6 @@ static int parse_general_kv(int line_no, const char *key, const char *val) {
 static void parse_instance_kv(instance_t *inst, int line_no, const char *key, const char *val) {
     if (strcasecmp(key, "cmd") == 0) {
         strncpy(inst->cmd, val, sizeof(inst->cmd)-1);
-    } else if (strcasecmp(key, "sse") == 0) {
-        if (parse_bool(val, &inst->sse_enable)) die("config:%d: invalid sse value '%s'", line_no, val);
-    } else if (strcasecmp(key, "sse_port") == 0) {
-        if (parse_int(val, &inst->sse_port)) die("config:%d: invalid sse_port", line_no);
-    } else if (strcasecmp(key, "sse_name") == 0) {
-        strncpy(inst->sse_name, val, sizeof(inst->sse_name)-1);
     } else if (strcasecmp(key, "quiet") == 0) {
         if (parse_bool(val, &inst->quiet)) die("config:%d: invalid quiet value '%s'", line_no, val);
     } else {
@@ -311,13 +297,6 @@ static void load_config(const char *path) {
     for (int i = 0; i < g_instance_count; i++) {
         if (!g_instances[i].cmd[0]) {
             die("instance '%s': cmd is required", g_instances[i].name);
-        }
-        if (g_instances[i].sse_enable) {
-            if (!g_cfg.sse_tail[0]) die("instance '%s': sse enabled but sse_tail not set in [general]", g_instances[i].name);
-            if (g_instances[i].sse_port == 0) g_instances[i].sse_port = g_cfg.sse_base_port++;
-            if (!g_instances[i].sse_name[0]) {
-                snprintf(g_instances[i].sse_name, sizeof(g_instances[i].sse_name), "%.255s", g_instances[i].name);
-            }
         }
     }
 }
@@ -418,37 +397,12 @@ static void build_command(const instance_t *inst, char **argv, int *argc, char *
     expand_placeholders(inst->cmd, expanded_cmd, sizeof(expanded_cmd));
     const char *cmd = wrap_exec(expanded_cmd, exec_wrapped, sizeof(exec_wrapped));
 
-    if (inst->sse_enable) {
-        snprintf(exec_path, exec_len, "%s", g_cfg.sse_tail);
-        *argc = 0;
-        argv[(*argc)++] = exec_path;
-
-        static char portbuf[32];
-        snprintf(portbuf, sizeof(portbuf), "%d", inst->sse_port);
-        argv[(*argc)++] = "-p";
-        argv[(*argc)++] = portbuf;
-
-        if (g_cfg.sse_host[0]) {
-            argv[(*argc)++] = "-h";
-            argv[(*argc)++] = g_cfg.sse_host;
-        }
-        if (inst->sse_name[0]) {
-            argv[(*argc)++] = "-n";
-            argv[(*argc)++] = (char *)inst->sse_name;
-        }
-        argv[(*argc)++] = "--";
-        argv[(*argc)++] = "/bin/sh";
-        argv[(*argc)++] = "-c";
-        argv[(*argc)++] = (char *)cmd;
-        argv[*argc] = NULL;
-    } else {
-        snprintf(exec_path, exec_len, "%s", "/bin/sh");
-        *argc = 0;
-        argv[(*argc)++] = exec_path;
-        argv[(*argc)++] = "-c";
-        argv[(*argc)++] = (char *)cmd;
-        argv[*argc] = NULL;
-    }
+    snprintf(exec_path, exec_len, "%s", "/bin/sh");
+    *argc = 0;
+    argv[(*argc)++] = exec_path;
+    argv[(*argc)++] = "-c";
+    argv[(*argc)++] = (char *)cmd;
+    argv[*argc] = NULL;
 }
 
 /* Supervision */
@@ -531,7 +485,10 @@ static void signal_handler(int sig) {
     g_stop_requested = 1;
 }
 
-static int start_children(void) {
+static int start_children(int *failed_idx, int *failed_status) {
+    if (failed_idx) *failed_idx = -1;
+    if (failed_status) *failed_status = 0;
+
     for (int i = 0; i < g_instance_count; i++) {
         instance_t *inst = &g_instances[i];
         char exec_path[MAX_VALUE_LEN];
@@ -549,9 +506,13 @@ static int start_children(void) {
         pid_t pid = fork();
         if (pid < 0) {
             fprintf(stderr, "wfb_supervisor: fork failed for instance '%s': %s\n", inst->name, strerror(errno));
+            if (failed_idx) *failed_idx = i;
+            if (failed_status) *failed_status = (127 << 8);
+            inst->exit_status = failed_status ? *failed_status : 0;
+            inst->running = 0;
             return -1;
         } else if (pid == 0) {
-            if (!inst->sse_enable && inst->quiet) {
+            if (inst->quiet) {
                 int nullfd = open("/dev/null", O_RDWR);
                 if (nullfd >= 0) {
                     dup2(nullfd, STDOUT_FILENO);
@@ -571,30 +532,26 @@ static int start_children(void) {
     return 0;
 }
 
-int main(int argc, char **argv) {
-    const char *config_path = "/etc/wfb.conf";
-    if (argc > 1) config_path = argv[1];
-
-    struct sigaction sa;
-    memset(&sa, 0, sizeof(sa));
-    sa.sa_handler = signal_handler;
-    sigaction(SIGINT, &sa, NULL);
-    sigaction(SIGTERM, &sa, NULL);
+static int supervise_once(const char *config_path) {
+    g_stop_requested = 0;
 
     load_config(config_path);
 
     run_commands(g_cfg.init_cmds, g_cfg.init_cmd_count, "init");
 
-    if (start_children() != 0) {
-        shutdown_all(-1, 0);
+    int failed_idx = -1;
+    int failed_status = 0;
+
+    if (start_children(&failed_idx, &failed_status) != 0) {
+        shutdown_all(failed_idx, failed_status);
         run_commands(g_cfg.cleanup_cmds, g_cfg.cleanup_cmd_count, "cleanup");
         return 1;
     }
 
     int running = g_instance_count;
     int shutdown_initiated = 0;
-    int failed_idx = -1;
-    int failed_status = 0;
+    failed_idx = -1;
+    failed_status = 0;
 
     while (running > 0) {
         if (g_stop_requested && !shutdown_initiated) {
@@ -636,4 +593,45 @@ int main(int argc, char **argv) {
     run_commands(g_cfg.cleanup_cmds, g_cfg.cleanup_cmd_count, "cleanup");
 
     return (failed_idx >= 0) ? 2 : 0;
+}
+
+int main(int argc, char **argv) {
+    const char *config_path = "/etc/wfb.conf";
+    int restart = 0;
+    int restart_delay = 3;
+
+    for (int i = 1; i < argc; i++) {
+        const char *arg = argv[i];
+        if (strcmp(arg, "--restart") == 0) {
+            restart = 1;
+        } else if (strcmp(arg, "--restart-delay") == 0) {
+            if (i + 1 >= argc) die("missing value for --restart-delay");
+            if (parse_int(argv[++i], &restart_delay)) die("invalid restart delay '%s'", argv[i]);
+        } else if (strncmp(arg, "--restart-delay=", 17) == 0) {
+            if (parse_int(arg + 17, &restart_delay)) die("invalid restart delay '%s'", arg + 17);
+        } else if (arg[0] == '-') {
+            die("unknown option '%s'", arg);
+        } else {
+            config_path = arg;
+        }
+    }
+
+    if (restart_delay < 0) die("restart delay must be non-negative");
+
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = signal_handler;
+    sigaction(SIGINT, &sa, NULL);
+    sigaction(SIGTERM, &sa, NULL);
+
+    int exit_code = 0;
+
+    do {
+        exit_code = supervise_once(config_path);
+        if (!restart) break;
+        fprintf(stderr, "wfb_supervisor: restart requested, sleeping %d seconds before relaunch\n", restart_delay);
+        sleep(restart_delay);
+    } while (restart);
+
+    return exit_code;
 }
