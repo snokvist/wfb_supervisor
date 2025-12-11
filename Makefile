@@ -4,6 +4,8 @@ CFLAGS ?= -O2 -std=c11 -Wall -Wextra
 PREFIX ?= /usr/local
 BINDIR ?= $(PREFIX)/bin
 SYSDDIR ?= /etc/systemd/system
+DESTDIR ?=
+INSTALL ?= install
 SERVICE_SRC := scripts/wfb_supervisor.service
 SERVICE_PATH := $(SYSDDIR)/wfb_supervisor.service
 MONITOR_SCRIPT := scripts/monitor.sh
@@ -35,19 +37,19 @@ arm: CC := $(ARM_CC)
 arm: all
 
 install: $(BIN) $(SERVICE_SRC) $(MONITOR_SCRIPT) $(SHAPER_SCRIPT) $(CONFIG_SRC)
-	install -d $(BINDIR) $(SYSDDIR) $(dir $(SUPERVISOR_CONF)) $(SUPERVISOR_WORKDIR)
-	install -m 0755 $(BIN) $(BINDIR)/
-	install -m 0755 $(MONITOR_SCRIPT) $(BINDIR)/monitor.sh
-	install -m 0755 $(SHAPER_SCRIPT) $(BINDIR)/shaper.sh
-	install -m 0644 $(CONFIG_SRC) $(SUPERVISOR_CONF)
+	$(INSTALL) -d $(DESTDIR)$(BINDIR) $(DESTDIR)$(SYSDDIR) $(DESTDIR)$(dir $(SUPERVISOR_CONF)) $(DESTDIR)$(SUPERVISOR_WORKDIR)
+	$(INSTALL) -m 0755 $(BIN) $(DESTDIR)$(BINDIR)/
+	$(INSTALL) -m 0755 $(MONITOR_SCRIPT) $(DESTDIR)$(BINDIR)/monitor.sh
+	$(INSTALL) -m 0755 $(SHAPER_SCRIPT) $(DESTDIR)$(BINDIR)/shaper.sh
+	$(INSTALL) -m 0644 $(CONFIG_SRC) $(DESTDIR)$(SUPERVISOR_CONF)
 	sed -e 's|@WFB_SUPERVISOR_BIN@|$(BINDIR)/$(BIN)|g' \
 	    -e 's|@WFB_SUPERVISOR_CONF@|$(SUPERVISOR_CONF)|g' \
 	    -e 's|@VRX_DIR@|$(SUPERVISOR_WORKDIR)|g' \
-	$(SERVICE_SRC) > $(SERVICE_PATH)
-	systemctl daemon-reload
+	$(SERVICE_SRC) > $(DESTDIR)$(SERVICE_PATH)
+	if [ -z "$(DESTDIR)" ]; then systemctl daemon-reload; fi
 
 uninstall:
-	rm -f $(BINDIR)/$(BIN) $(BINDIR)/monitor.sh $(BINDIR)/shaper.sh
-	rm -f $(SUPERVISOR_CONF)
-	rm -f $(SERVICE_PATH)
-	systemctl daemon-reload
+	rm -f $(DESTDIR)$(BINDIR)/$(BIN) $(DESTDIR)$(BINDIR)/monitor.sh $(DESTDIR)$(BINDIR)/shaper.sh
+	rm -f $(DESTDIR)$(SUPERVISOR_CONF)
+	rm -f $(DESTDIR)$(SERVICE_PATH)
+	if [ -z "$(DESTDIR)" ]; then systemctl daemon-reload; fi
