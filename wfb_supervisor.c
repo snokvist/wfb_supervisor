@@ -103,6 +103,8 @@ static int parse_int(const char *v, int *out) {
     return 0;
 }
 
+static void run_commands(char cmds[][MAX_VALUE_LEN], int count, const char *phase);
+
 /* Config */
 
 static void init_defaults(void) {
@@ -309,6 +311,11 @@ static void load_config(const char *path) {
             die("instance '%s': cmd is required", g_instances[i].name);
         }
     }
+}
+
+static void reload_config_and_init(const char *config_path) {
+    load_config(config_path);
+    run_commands(g_cfg.init_cmds, g_cfg.init_cmd_count, "init");
 }
 
 /* Hooks */
@@ -542,11 +549,7 @@ static int start_children(int *failed_idx, int *failed_status) {
     return 0;
 }
 
-static int supervise_once(const char *config_path) {
-    load_config(config_path);
-
-    run_commands(g_cfg.init_cmds, g_cfg.init_cmd_count, "init");
-
+static int supervise_once(void) {
     int failed_idx = -1;
     int failed_status = 0;
 
@@ -640,7 +643,8 @@ int main(int argc, char **argv) {
     do {
         if (g_stop_requested) break;
         g_stop_requested = 0;
-        exit_code = supervise_once(config_path);
+        reload_config_and_init(config_path);
+        exit_code = supervise_once();
         if (g_stop_requested) break;
         int restart_enabled = (restart >= 0) ? restart : g_cfg.restart_enabled;
         int effective_delay = restart_delay_set ? restart_delay : g_cfg.restart_delay;
