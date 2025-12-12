@@ -13,6 +13,7 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <time.h>
+#include <sched.h>
 
 #define MAX_INSTANCES 16
 #define MAX_NAME_LEN  64
@@ -52,6 +53,7 @@ typedef struct {
     char name[MAX_NAME_LEN];
     char cmd[MAX_VALUE_LEN];
     int  quiet;          // suppress stdout/stderr
+    int  cpu_core;       // pin to a specific CPU core (-1 for no pin)
 
     pid_t pid;
     int   exit_status;
@@ -205,6 +207,7 @@ static instance_t *add_instance(const char *name, int line_no) {
     instance_t *inst = &g_instances[g_instance_count++];
     memset(inst, 0, sizeof(*inst));
     strncpy(inst->name, name, sizeof(inst->name)-1);
+    inst->cpu_core = -1;
     return inst;
 }
 
@@ -231,6 +234,10 @@ static void parse_instance_kv(instance_t *inst, int line_no, const char *key, co
         strncpy(inst->cmd, val, sizeof(inst->cmd)-1);
     } else if (strcasecmp(key, "quiet") == 0) {
         if (parse_bool(val, &inst->quiet)) die("config:%d: invalid quiet value '%s'", line_no, val);
+    } else if (strcasecmp(key, "cpu") == 0) {
+        if (parse_int(val, &inst->cpu_core)) die("config:%d: invalid cpu value '%s'", line_no, val);
+        if (inst->cpu_core < 0) die("config:%d: cpu core must be non-negative", line_no);
+        if (inst->cpu_core >= CPU_SETSIZE) die("config:%d: cpu core %d exceeds maximum %d", line_no, inst->cpu_core, CPU_SETSIZE - 1);
     } else {
         die("config:%d: unknown key '%s' in instance '%s'", line_no, key, inst->name);
     }
@@ -519,6 +526,9 @@ static int start_children(int *failed_idx, int *failed_status) {
             fprintf(stderr, " %s", argv[k]);
         }
         fprintf(stderr, "\n");
+        if (inst->cpu_core >= 0) {
+            fprintf(stderr, "wfb_supervisor: pinning '%s' to CPU %d\n", inst->name, inst->cpu_core);
+        }
 
         pid_t pid = fork();
         if (pid < 0) {
@@ -529,6 +539,15 @@ static int start_children(int *failed_idx, int *failed_status) {
             inst->running = 0;
             return -1;
         } else if (pid == 0) {
+            if (inst->cpu_core >= 0) {
+                cpu_set_t set;
+                CPU_ZERO(&set);
+                CPU_SET(inst->cpu_core, &set);
+                if (sched_setaffinity(0, sizeof(set), &set) != 0) {
+                    fprintf(stderr, "wfb_supervisor: failed to set CPU %d affinity for '%s': %s\n",
+                            inst->cpu_core, inst->name, strerror(errno));
+                }
+            }
             if (inst->quiet) {
                 int nullfd = open("/dev/null", O_RDWR);
                 if (nullfd >= 0) {

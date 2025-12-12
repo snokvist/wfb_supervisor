@@ -14,7 +14,8 @@ A tiny supervisor that reads explicit command lines from `config/wfb.conf` and l
 ## Config shape
 - `[general]`: zero or more `init_cmd=` / `cleanup_cmd=` entries (run before starting instances and after shutdown). Commands run via `/bin/sh -c`, and these hooks are only valid in `[general]`.
 - `[parameters]`: runtime knobs that get substituted into command lines and helper scripts, such as `rx_nics`, `tx_nics`, `master_node`, `link_id`, `mcs`, `ldpc`, `stbc`, `key_file`, `log_interval`, `restart`, `restart_delay`, `REGION`, `CHANNEL`, `TXPOWER`, and `BANDWIDTH`. `restart` toggles relaunching after cleanup; `restart_delay` controls the sleep before restart (seconds, default 3).
-- `[instance <name>]`: `cmd=...` (full command line). Optional `quiet=yes|no` suppresses stdout/stderr.
+- `[instance <name>]`: `cmd=...` (full command line). Optional `quiet=yes|no` suppresses stdout/stderr, and `cpu=<n>` pins the
+  instance to CPU core `n` before exec.
 
 There is no derived flag handling—encode everything you need directly in `cmd=`.
 
