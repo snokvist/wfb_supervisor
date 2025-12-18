@@ -22,19 +22,11 @@
 #define MAX_CMD_LEN   1024
 #define MAX_ARGS      64
 #define MAX_CMDS      8
-#define MAX_EXTRA_GENERAL 32
+#define MAX_PARAM_ENTRIES 64
+#define DEFAULT_RESTART_ENABLED 0
+#define DEFAULT_RESTART_DELAY   3
 
 typedef struct {
-    char rx_nics[MAX_VALUE_LEN];
-    char tx_nics[MAX_VALUE_LEN];
-    char master_node[MAX_VALUE_LEN];
-    char link_id[MAX_VALUE_LEN];
-    int  mcs;
-    int  ldpc;
-    int  stbc;
-    char key_file[MAX_VALUE_LEN];
-    int  log_interval;
-
     char init_cmds[MAX_CMDS][MAX_VALUE_LEN];
     int  init_cmd_count;
     char cleanup_cmds[MAX_CMDS][MAX_VALUE_LEN];
@@ -43,10 +35,10 @@ typedef struct {
     int  restart_enabled;
     int  restart_delay;
 
-    char extra_keys[MAX_EXTRA_GENERAL][MAX_KEY_LEN];
-    char extra_placeholders[MAX_EXTRA_GENERAL][MAX_KEY_LEN + 2];
-    char extra_vals[MAX_EXTRA_GENERAL][MAX_VALUE_LEN];
-    int  extra_count;
+    char param_keys[MAX_PARAM_ENTRIES][MAX_KEY_LEN];
+    char param_placeholders[MAX_PARAM_ENTRIES][MAX_KEY_LEN + 2];
+    char param_vals[MAX_PARAM_ENTRIES][MAX_VALUE_LEN];
+    int  param_count;
 } general_config_t;
 
 typedef struct {
@@ -106,89 +98,63 @@ static int parse_int(const char *v, int *out) {
 }
 
 static void run_commands(char cmds[][MAX_VALUE_LEN], int count, const char *phase);
+static void store_param_kv(int line_no, const char *key, const char *val);
+static const char *get_param_value(const char *key);
+static int get_param_bool(const char *key, int default_val);
+static int get_param_int(const char *key, int default_val);
+static void apply_runtime_settings(void);
 
 /* Config */
 
 static void init_defaults(void) {
     memset(&g_cfg, 0, sizeof(g_cfg));
-    strcpy(g_cfg.rx_nics, "");
-    strcpy(g_cfg.tx_nics, "");
-    strcpy(g_cfg.master_node, "");
-    strcpy(g_cfg.link_id, "");
-    g_cfg.mcs = 0;
-    g_cfg.ldpc = 0;
-    g_cfg.stbc = 0;
-    strcpy(g_cfg.key_file, "");
-    g_cfg.log_interval = 0;
-    g_cfg.restart_enabled = 0;
-    g_cfg.restart_delay = 3;
+    g_cfg.restart_enabled = DEFAULT_RESTART_ENABLED;
+    g_cfg.restart_delay = DEFAULT_RESTART_DELAY;
 }
 
-static void store_extra_kv(int line_no, const char *key, const char *val) {
-    for (int i = 0; i < g_cfg.extra_count; i++) {
-        if (strcasecmp(g_cfg.extra_keys[i], key) == 0) {
-            strncpy(g_cfg.extra_vals[i], val, sizeof(g_cfg.extra_vals[i]) - 1);
-            g_cfg.extra_vals[i][sizeof(g_cfg.extra_vals[i]) - 1] = '\0';
-            return;
+static void store_param_kv(int line_no, const char *key, const char *val) {
+    int idx = -1;
+    for (int i = 0; i < g_cfg.param_count; i++) {
+        if (strcasecmp(g_cfg.param_keys[i], key) == 0) {
+            idx = i;
+            break;
         }
     }
 
-    if (g_cfg.extra_count >= MAX_EXTRA_GENERAL) {
-        die("config:%d: too many general/parameter entries (max %d)", line_no, MAX_EXTRA_GENERAL);
+    if (idx < 0) {
+        if (g_cfg.param_count >= MAX_PARAM_ENTRIES) {
+            die("config:%d: too many general/parameter entries (max %d)", line_no, MAX_PARAM_ENTRIES);
+        }
+
+        idx = g_cfg.param_count++;
+
+        strncpy(g_cfg.param_keys[idx], key, sizeof(g_cfg.param_keys[0]) - 1);
+        g_cfg.param_keys[idx][sizeof(g_cfg.param_keys[0]) - 1] = '\0';
+
+        char placeholder[MAX_KEY_LEN + 2];
+        int n = snprintf(placeholder, sizeof(placeholder), "$%s",
+                         g_cfg.param_keys[idx]);
+        if (n < 0 || (size_t)n >= sizeof(placeholder)) {
+            die("config:%d: general key '%s' too long to substitute", line_no, key);
+        }
+
+        size_t placeholder_len = strlen(placeholder);
+        if (placeholder_len >= sizeof(g_cfg.param_placeholders[0])) {
+            die("config:%d: general key '%s' too long to substitute", line_no, key);
+        }
+        memcpy(g_cfg.param_placeholders[idx], placeholder, placeholder_len + 1);
     }
 
-    strncpy(g_cfg.extra_keys[g_cfg.extra_count], key, sizeof(g_cfg.extra_keys[0]) - 1);
-    g_cfg.extra_keys[g_cfg.extra_count][sizeof(g_cfg.extra_keys[0]) - 1] = '\0';
-
-    char placeholder[MAX_KEY_LEN + 2];
-    int n = snprintf(placeholder, sizeof(placeholder), "$%s",
-                     g_cfg.extra_keys[g_cfg.extra_count]);
-    if (n < 0 || (size_t)n >= sizeof(placeholder)) {
-        die("config:%d: general key '%s' too long to substitute", line_no, key);
-    }
-
-    size_t placeholder_len = strlen(placeholder);
-    if (placeholder_len >= sizeof(g_cfg.extra_placeholders[0])) {
-        die("config:%d: general key '%s' too long to substitute", line_no, key);
-    }
-    memcpy(g_cfg.extra_placeholders[g_cfg.extra_count], placeholder, placeholder_len + 1);
-
-    strncpy(g_cfg.extra_vals[g_cfg.extra_count], val, sizeof(g_cfg.extra_vals[0]) - 1);
-    g_cfg.extra_vals[g_cfg.extra_count][sizeof(g_cfg.extra_vals[0]) - 1] = '\0';
-
-    g_cfg.extra_count++;
+    strncpy(g_cfg.param_vals[idx], val, sizeof(g_cfg.param_vals[0]) - 1);
+    g_cfg.param_vals[idx][sizeof(g_cfg.param_vals[0]) - 1] = '\0';
 }
 
 static int parse_parameter_kv(int line_no, const char *key, const char *val) {
-    if (strcasecmp(key, "rx_nics") == 0) {
-        strncpy(g_cfg.rx_nics, val, sizeof(g_cfg.rx_nics)-1);
-    } else if (strcasecmp(key, "tx_nics") == 0) {
-        strncpy(g_cfg.tx_nics, val, sizeof(g_cfg.tx_nics)-1);
-    } else if (strcasecmp(key, "master_node") == 0) {
-        strncpy(g_cfg.master_node, val, sizeof(g_cfg.master_node)-1);
-    } else if (strcasecmp(key, "link_id") == 0) {
-        strncpy(g_cfg.link_id, val, sizeof(g_cfg.link_id)-1);
-    } else if (strcasecmp(key, "mcs") == 0) {
-        if (parse_int(val, &g_cfg.mcs)) die("config:%d: invalid mcs", line_no);
-    } else if (strcasecmp(key, "ldpc") == 0) {
-        if (parse_int(val, &g_cfg.ldpc)) die("config:%d: invalid ldpc", line_no);
-    } else if (strcasecmp(key, "stbc") == 0) {
-        if (parse_int(val, &g_cfg.stbc)) die("config:%d: invalid stbc", line_no);
-    } else if (strcasecmp(key, "key_file") == 0) {
-        strncpy(g_cfg.key_file, val, sizeof(g_cfg.key_file)-1);
-    } else if (strcasecmp(key, "log_interval") == 0) {
-        if (parse_int(val, &g_cfg.log_interval)) die("config:%d: invalid log_interval", line_no);
-    } else if (strcasecmp(key, "restart") == 0) {
-        if (parse_bool(val, &g_cfg.restart_enabled)) die("config:%d: invalid restart value '%s'", line_no, val);
-    } else if (strcasecmp(key, "restart_delay") == 0) {
-        if (parse_int(val, &g_cfg.restart_delay)) die("config:%d: invalid restart_delay", line_no);
-        if (g_cfg.restart_delay < 0) die("config:%d: restart_delay must be non-negative", line_no);
-    } else if (strcasecmp(key, "init_cmd") == 0 || strcasecmp(key, "cleanup_cmd") == 0) {
+    if (strcasecmp(key, "init_cmd") == 0 || strcasecmp(key, "cleanup_cmd") == 0) {
         die("config:%d: %s must be placed in [general]", line_no, key);
-    } else {
-        store_extra_kv(line_no, key, val);
-        return 0;
     }
+
+    store_param_kv(line_no, key, val);
 
     return 1;
 }
@@ -311,6 +277,8 @@ static void load_config(const char *path) {
 
     fclose(f);
 
+    apply_runtime_settings();
+
     if (g_instance_count == 0) die("no instances defined in config");
 
     for (int i = 0; i < g_instance_count; i++) {
@@ -328,49 +296,25 @@ static void reload_config_and_init(const char *config_path) {
 /* Hooks */
 
 static void expand_placeholders(const char *in, char *out, size_t out_len) {
-    char mcs_buf[16], ldpc_buf[16], stbc_buf[16], log_buf[32];
-    snprintf(mcs_buf, sizeof(mcs_buf), "%d", g_cfg.mcs);
-    snprintf(ldpc_buf, sizeof(ldpc_buf), "%d", g_cfg.ldpc);
-    snprintf(stbc_buf, sizeof(stbc_buf), "%d", g_cfg.stbc);
-    snprintf(log_buf, sizeof(log_buf), "%d", g_cfg.log_interval);
-
-    struct kv { const char *key; const char *val; int ci; } table[9 + MAX_EXTRA_GENERAL];
-    size_t tcount = 0;
-
-    table[tcount++] = (struct kv){"$rx_nics", g_cfg.rx_nics, 0};
-    table[tcount++] = (struct kv){"$tx_nics", g_cfg.tx_nics, 0};
-    table[tcount++] = (struct kv){"$master_node", g_cfg.master_node, 0};
-    table[tcount++] = (struct kv){"$link_id", g_cfg.link_id, 0};
-    table[tcount++] = (struct kv){"$mcs", mcs_buf, 0};
-    table[tcount++] = (struct kv){"$ldpc", ldpc_buf, 0};
-    table[tcount++] = (struct kv){"$stbc", stbc_buf, 0};
-    table[tcount++] = (struct kv){"$key_file", g_cfg.key_file, 0};
-    table[tcount++] = (struct kv){"$log_interval", log_buf, 0};
-
-    for (int i = 0; i < g_cfg.extra_count; i++) {
-        table[tcount++] = (struct kv){g_cfg.extra_placeholders[i], g_cfg.extra_vals[i], 1};
-    }
     size_t pos = 0;
     size_t out_pos = 0;
     size_t in_len = strlen(in);
     while (pos < in_len) {
         int matched = 0;
-        for (size_t i = 0; i < tcount; i++) {
-            size_t klen = strlen(table[i].key);
-            if (klen == 0) continue;
+        if (in[pos] == '$') {
+            for (int i = 0; i < g_cfg.param_count; i++) {
+                size_t klen = strlen(g_cfg.param_placeholders[i]);
+                if (klen == 0) continue;
 
-            int key_match = table[i].ci ?
-                (strncasecmp(in + pos, table[i].key, klen) == 0) :
-                (strncmp(in + pos, table[i].key, klen) == 0);
-
-            if (key_match) {
-                size_t vlen = strlen(table[i].val);
-                if (out_pos + vlen >= out_len) die("expanded command too long");
-                memcpy(out + out_pos, table[i].val, vlen);
-                out_pos += vlen;
-                pos += klen;
-                matched = 1;
-                break;
+                if (strncasecmp(in + pos, g_cfg.param_placeholders[i], klen) == 0) {
+                    size_t vlen = strlen(g_cfg.param_vals[i]);
+                    if (out_pos + vlen >= out_len) die("expanded command too long");
+                    memcpy(out + out_pos, g_cfg.param_vals[i], vlen);
+                    out_pos += vlen;
+                    pos += klen;
+                    matched = 1;
+                    break;
+                }
             }
         }
         if (!matched) {
@@ -380,6 +324,45 @@ static void expand_placeholders(const char *in, char *out, size_t out_len) {
     }
     if (out_pos >= out_len) die("expanded command too long");
     out[out_pos] = '\0';
+}
+
+static const char *get_param_value(const char *key) {
+    for (int i = 0; i < g_cfg.param_count; i++) {
+        if (strcasecmp(g_cfg.param_keys[i], key) == 0) {
+            return g_cfg.param_vals[i];
+        }
+    }
+    return NULL;
+}
+
+static int get_param_bool(const char *key, int default_val) {
+    const char *val = get_param_value(key);
+    if (!val) return default_val;
+
+    int parsed = 0;
+    if (parse_bool(val, &parsed)) {
+        die("config: invalid boolean value '%s' for %s", val, key);
+    }
+    return parsed;
+}
+
+static int get_param_int(const char *key, int default_val) {
+    const char *val = get_param_value(key);
+    if (!val) return default_val;
+
+    int parsed = 0;
+    if (parse_int(val, &parsed)) {
+        die("config: invalid integer value '%s' for %s", val, key);
+    }
+    return parsed;
+}
+
+static void apply_runtime_settings(void) {
+    g_cfg.restart_enabled = get_param_bool("restart", DEFAULT_RESTART_ENABLED);
+    g_cfg.restart_delay = get_param_int("restart_delay", DEFAULT_RESTART_DELAY);
+    if (g_cfg.restart_delay < 0) {
+        die("config: restart_delay must be non-negative (got %d)", g_cfg.restart_delay);
+    }
 }
 
 static const char *wrap_exec(const char *cmd, char *buf, size_t buf_len) {
