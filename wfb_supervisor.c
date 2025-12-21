@@ -1,4 +1,4 @@
-/*
+/**
 * autod – Autod Personal Use License
  * Copyright (c) 2025 Joakim Snökvist
  * Licensed for personal, non-commercial use only.
