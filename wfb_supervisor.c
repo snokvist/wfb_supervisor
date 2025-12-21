@@ -1,3 +1,11 @@
+/*
+* autod – Autod Personal Use License
+ * Copyright (c) 2025 Joakim Snökvist
+ * Licensed for personal, non-commercial use only.
+ * Redistribution or commercial use requires prior written approval from Joakim Snökvist.
+ * See LICENSE.md for full terms.
+ */
+
 //gcc -O2 -std=c11 -Wall -Wextra -o wfb_supervisor wfb_supervisor.c
 #define _GNU_SOURCE
 #include <stdio.h>
